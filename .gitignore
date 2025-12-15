@@ -1,0 +1,30 @@
+# Binaries
+bin/
+/trade
+*.exe
+
+# Database
+*.db
+
+# Dependencies
+web/node_modules/
+
+# Build artifacts
+web/dist/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Goreleaser
+dist/
+
+# Claude Code local state
+.claude/
