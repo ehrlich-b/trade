@@ -1,24 +1,66 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 interface Props {
   onSubmit: (side: 'buy' | 'sell', type: 'limit' | 'market', price: number, quantity: number) => void
   midPrice: number
+  submitting?: boolean
 }
 
-function OrderForm({ onSubmit, midPrice }: Props) {
+function OrderForm({ onSubmit, midPrice, submitting = false }: Props) {
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
   const [type, setType] = useState<'limit' | 'market'>('limit')
-  const [price, setPrice] = useState(midPrice / 100)
+  const [price, setPrice] = useState(Math.round(midPrice) / 100)
   const [quantity, setQuantity] = useState(10)
+  const [error, setError] = useState<string | null>(null)
+  const userEditedPrice = useRef(false)
+
+  // Sync price with midPrice when it changes (unless user has manually edited)
+  // Round to 2 decimal places to avoid precision issues
+  useEffect(() => {
+    if (!userEditedPrice.current) {
+      setPrice(Math.round(midPrice) / 100)
+    }
+  }, [midPrice])
+
+  const validate = (): boolean => {
+    if (quantity <= 0 || !Number.isInteger(quantity)) {
+      setError('Quantity must be a positive integer')
+      return false
+    }
+    if (type === 'limit' && price <= 0) {
+      setError('Price must be positive')
+      return false
+    }
+    setError(null)
+    return true
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validate()) return
     onSubmit(side, type, Math.round(price * 100), quantity)
+    userEditedPrice.current = false
   }
+
+  const handlePriceChange = (value: number) => {
+    userEditedPrice.current = true
+    // Round to 2 decimal places to avoid precision issues
+    const rounded = Math.round(value * 100) / 100
+    setPrice(rounded)
+    setError(null)
+  }
+
+  const handleQuantityChange = (value: number) => {
+    setQuantity(value)
+    setError(null)
+  }
+
+  // Quick quantity buttons
+  const quickQty = [10, 25, 50, 100]
 
   return (
     <div style={styles.container}>
-      <h2 style={styles.title}>Place Order</h2>
+      <h2 style={styles.title}>PLACE ORDER</h2>
 
       <form onSubmit={handleSubmit} style={styles.form}>
         <div style={styles.sideButtons}>
@@ -73,8 +115,9 @@ function OrderForm({ onSubmit, midPrice }: Props) {
             <input
               type="number"
               step="0.01"
+              min="0.01"
               value={price}
-              onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
+              onChange={(e) => handlePriceChange(parseFloat(e.target.value) || 0)}
               style={styles.input}
             />
           </div>
@@ -84,20 +127,44 @@ function OrderForm({ onSubmit, midPrice }: Props) {
           <label style={styles.label}>Quantity</label>
           <input
             type="number"
+            min="1"
+            step="1"
             value={quantity}
-            onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
+            onChange={(e) => handleQuantityChange(parseInt(e.target.value) || 0)}
             style={styles.input}
           />
+          <div style={styles.quickButtons}>
+            {quickQty.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => handleQuantityChange(q)}
+                style={{
+                  ...styles.quickButton,
+                  ...(quantity === q ? styles.quickButtonActive : {}),
+                }}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {error && <div style={styles.error}>{error}</div>}
 
         <button
           type="submit"
+          disabled={submitting}
           style={{
             ...styles.submitButton,
             backgroundColor: side === 'buy' ? '#22c55e' : '#ef4444',
+            opacity: submitting ? 0.6 : 1,
+            cursor: submitting ? 'not-allowed' : 'pointer',
           }}
         >
-          {side === 'buy' ? 'BUY' : 'SELL'} {quantity} @ {type === 'market' ? 'MKT' : `$${price.toFixed(2)}`}
+          {submitting
+            ? 'Submitting...'
+            : `${side === 'buy' ? 'BUY' : 'SELL'} ${quantity} @ ${type === 'market' ? 'MKT' : `$${price.toFixed(2)}`}`}
         </button>
       </form>
     </div>
@@ -106,32 +173,30 @@ function OrderForm({ onSubmit, midPrice }: Props) {
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    background: '#111',
-    borderRadius: '8px',
-    padding: '16px',
+    // Removed background - parent panel has it
   },
   title: {
-    fontSize: '14px',
+    fontSize: '12px',
     fontWeight: 'bold',
-    marginBottom: '16px',
-    color: '#888',
-    textTransform: 'uppercase',
+    marginBottom: '12px',
+    color: '#666',
+    letterSpacing: '0.5px',
   },
   form: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
+    gap: '10px',
   },
   sideButtons: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
-    gap: '8px',
+    gap: '6px',
   },
   sideButton: {
-    padding: '12px',
+    padding: '10px',
     border: 'none',
     borderRadius: '4px',
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: 'bold',
     cursor: 'pointer',
   },
@@ -144,19 +209,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#fff',
   },
   inactive: {
-    backgroundColor: '#222',
+    backgroundColor: '#1a1a1a',
     color: '#666',
   },
   typeButtons: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
-    gap: '8px',
+    gap: '6px',
   },
   typeButton: {
-    padding: '8px',
+    padding: '6px',
     border: 'none',
     borderRadius: '4px',
-    fontSize: '12px',
+    fontSize: '11px',
     cursor: 'pointer',
   },
   typeActive: {
@@ -169,26 +234,54 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '4px',
   },
   label: {
-    fontSize: '12px',
-    color: '#888',
+    fontSize: '11px',
+    color: '#666',
   },
   input: {
-    padding: '10px',
-    backgroundColor: '#222',
+    padding: '8px',
+    backgroundColor: '#1a1a1a',
     border: '1px solid #333',
     borderRadius: '4px',
     color: '#fff',
-    fontSize: '16px',
+    fontSize: '14px',
+    fontFamily: 'monospace',
+  },
+  quickButtons: {
+    display: 'flex',
+    gap: '4px',
+    marginTop: '4px',
+  },
+  quickButton: {
+    flex: 1,
+    padding: '4px',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #333',
+    borderRadius: '3px',
+    color: '#666',
+    fontSize: '11px',
+    cursor: 'pointer',
+  },
+  quickButtonActive: {
+    backgroundColor: '#333',
+    color: '#fff',
+    borderColor: '#444',
+  },
+  error: {
+    color: '#ef4444',
+    fontSize: '12px',
+    padding: '6px 8px',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: '4px',
   },
   submitButton: {
-    padding: '14px',
+    padding: '12px',
     border: 'none',
     borderRadius: '4px',
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: 'bold',
     color: '#fff',
     cursor: 'pointer',
-    marginTop: '8px',
+    marginTop: '4px',
   },
 }
 

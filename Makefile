@@ -1,4 +1,4 @@
-.PHONY: all build build-go run test clean dev frontend check release snapshot
+.PHONY: all build build-go run test test-e2e clean dev frontend check release snapshot
 
 # Default target
 all: build
@@ -29,6 +29,10 @@ test:
 # Run tests with coverage
 test-cover:
 	go test -cover ./...
+
+# Run e2e tests (builds and starts server automatically)
+test-e2e:
+	cd web && npm run test
 
 # Build frontend
 frontend:

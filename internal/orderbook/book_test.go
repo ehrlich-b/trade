@@ -275,16 +275,51 @@ func TestRecentTrades(t *testing.T) {
 	}
 }
 
-func TestNoSelfTrade(t *testing.T) {
-	// This tests that orders from same user can technically match
-	// In a real system you might want to prevent this, but for now we allow it
+func TestSelfTradePrevention(t *testing.T) {
 	book := New("FAKE")
 
+	// User places a sell order
 	book.Submit(&Order{ID: "sell1", UserID: "user1", Side: Sell, Type: Limit, Price: 10000, Quantity: 10})
+
+	// Same user places a matching buy order - should NOT match
 	trades, _ := book.Submit(&Order{ID: "buy1", UserID: "user1", Side: Buy, Type: Limit, Price: 10000, Quantity: 10})
 
-	// Currently allows self-trade - this is a design decision
+	// Self-trade should be prevented - no trades
+	if len(trades) != 0 {
+		t.Errorf("expected no trades (self-trade prevented), got %d trades", len(trades))
+	}
+
+	// Both orders should be in the book
+	snap := book.Snapshot()
+	if len(snap.Bids) != 1 {
+		t.Errorf("expected 1 bid, got %d", len(snap.Bids))
+	}
+	if len(snap.Asks) != 1 {
+		t.Errorf("expected 1 ask, got %d", len(snap.Asks))
+	}
+}
+
+func TestSelfTradePreventionWithOtherOrders(t *testing.T) {
+	book := New("FAKE")
+
+	// User1 places a sell
+	book.Submit(&Order{ID: "sell1", UserID: "user1", Side: Sell, Type: Limit, Price: 10000, Quantity: 10})
+	// User2 also places a sell at the same price
+	book.Submit(&Order{ID: "sell2", UserID: "user2", Side: Sell, Type: Limit, Price: 10000, Quantity: 10})
+
+	// User1 places a buy - should skip their own order and match user2's
+	trades, _ := book.Submit(&Order{ID: "buy1", UserID: "user1", Side: Buy, Type: Limit, Price: 10000, Quantity: 10})
+
 	if len(trades) != 1 {
-		t.Errorf("expected trade (self-trade allowed), got %d trades", len(trades))
+		t.Fatalf("expected 1 trade, got %d", len(trades))
+	}
+	if trades[0].SellerID != "user2" {
+		t.Errorf("expected to match user2's order, got %s", trades[0].SellerID)
+	}
+
+	// User1's sell should still be in the book
+	snap := book.Snapshot()
+	if len(snap.Asks) != 1 {
+		t.Errorf("expected 1 ask remaining (user1's), got %d", len(snap.Asks))
 	}
 }

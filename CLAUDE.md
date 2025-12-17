@@ -42,6 +42,9 @@ make build
 # Run frontend dev server (for hot reload during UI development)
 make frontend-dev
 
+# Run e2e tests (starts server automatically)
+make test-e2e
+
 # Clean build artifacts
 make clean
 ```

@@ -19,7 +19,13 @@ type MarketMaker struct {
 	sizePerLevel int64 // Quantity per level
 	orderIDs     []string
 	stopCh       chan struct{}
-	onUpdate     func() // Callback when book is updated
+	onUpdate     func()                     // Callback when book is updated
+	onTrade      func(orderbook.Trade) // Callback when trades occur (for notifying server)
+
+	// Position tracking
+	position    int64 // Net position (positive = long, negative = short)
+	avgPrice    int64 // Average entry price (cents)
+	realizedPnL int64 // Realized P&L (cents)
 }
 
 // NewMarketMaker creates a new market maker bot
@@ -61,6 +67,14 @@ func (mm *MarketMaker) SetOnUpdate(fn func()) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 	mm.onUpdate = fn
+}
+
+// SetOnTrade sets a callback to be called when trades occur
+// This allows the server to update counterparty positions and broadcast trades
+func (mm *MarketMaker) SetOnTrade(fn func(orderbook.Trade)) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	mm.onTrade = fn
 }
 
 // Start begins the market maker loop
@@ -127,10 +141,21 @@ func (mm *MarketMaker) requote() {
 			Price:    price,
 			Quantity: mm.sizePerLevel,
 		}
-		if _, err := mm.book.Submit(order); err != nil {
+		trades, err := mm.book.Submit(order)
+		if err != nil {
 			log.Printf("MM bid submit error: %v", err)
 		} else {
 			mm.orderIDs = append(mm.orderIDs, order.ID)
+			for _, trade := range trades {
+				// Notify server so counterparty positions update + WebSocket broadcast
+				// MM position is updated via callback chain: server.OnTrade(mm.ProcessTrade)
+				if mm.onTrade != nil {
+					mm.onTrade(trade)
+				} else {
+					// Fallback if no callback configured
+					mm.processTradeInternal(trade)
+				}
+			}
 		}
 	}
 
@@ -144,10 +169,21 @@ func (mm *MarketMaker) requote() {
 			Price:    price,
 			Quantity: mm.sizePerLevel,
 		}
-		if _, err := mm.book.Submit(order); err != nil {
+		trades, err := mm.book.Submit(order)
+		if err != nil {
 			log.Printf("MM ask submit error: %v", err)
 		} else {
 			mm.orderIDs = append(mm.orderIDs, order.ID)
+			for _, trade := range trades {
+				// Notify server so counterparty positions update + WebSocket broadcast
+				// MM position is updated via callback chain: server.OnTrade(mm.ProcessTrade)
+				if mm.onTrade != nil {
+					mm.onTrade(trade)
+				} else {
+					// Fallback if no callback configured
+					mm.processTradeInternal(trade)
+				}
+			}
 		}
 	}
 
@@ -166,4 +202,105 @@ func (mm *MarketMaker) cancelAllOrders() {
 		mm.book.Cancel(orderID)
 	}
 	mm.orderIDs = nil
+}
+
+// Position returns the current net position
+func (mm *MarketMaker) Position() int64 {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	return mm.position
+}
+
+// AvgPrice returns the average entry price
+func (mm *MarketMaker) AvgPrice() int64 {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	return mm.avgPrice
+}
+
+// RealizedPnL returns the realized P&L
+func (mm *MarketMaker) RealizedPnL() int64 {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	return mm.realizedPnL
+}
+
+// UnrealizedPnL returns the unrealized P&L based on mid price
+func (mm *MarketMaker) UnrealizedPnL() int64 {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	if mm.position == 0 {
+		return 0
+	}
+	midPrice := mm.priceGen.Price()
+	if mm.position > 0 {
+		return mm.position * (midPrice - mm.avgPrice)
+	}
+	return (-mm.position) * (mm.avgPrice - midPrice)
+}
+
+// ProcessTrade updates position and P&L based on a trade
+// Call this when any trade occurs that might involve the market maker
+func (mm *MarketMaker) ProcessTrade(trade orderbook.Trade) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	mm.processTradeInternal(trade)
+}
+
+// processTradeInternal updates position and P&L (must hold lock)
+func (mm *MarketMaker) processTradeInternal(trade orderbook.Trade) {
+	var side string
+	var qty int64 = trade.Quantity
+
+	if trade.BuyerID == mm.userID {
+		side = "buy"
+	} else if trade.SellerID == mm.userID {
+		side = "sell"
+	} else {
+		return // Not our trade
+	}
+
+	if side == "buy" {
+		if mm.position >= 0 {
+			// Adding to long or opening long
+			totalCost := mm.avgPrice*mm.position + trade.Price*qty
+			mm.position += qty
+			if mm.position > 0 {
+				mm.avgPrice = totalCost / mm.position
+			}
+		} else {
+			// Covering short
+			coverQty := min(qty, -mm.position)
+			pnl := coverQty * (mm.avgPrice - trade.Price)
+			mm.realizedPnL += pnl
+
+			mm.position += qty
+			if mm.position > 0 {
+				mm.avgPrice = trade.Price
+			} else if mm.position == 0 {
+				mm.avgPrice = 0
+			}
+		}
+	} else { // sell
+		if mm.position <= 0 {
+			// Adding to short or opening short
+			totalValue := mm.avgPrice*(-mm.position) + trade.Price*qty
+			mm.position -= qty
+			if mm.position < 0 {
+				mm.avgPrice = totalValue / (-mm.position)
+			}
+		} else {
+			// Closing long
+			closeQty := min(qty, mm.position)
+			pnl := closeQty * (trade.Price - mm.avgPrice)
+			mm.realizedPnL += pnl
+
+			mm.position -= qty
+			if mm.position < 0 {
+				mm.avgPrice = trade.Price
+			} else if mm.position == 0 {
+				mm.avgPrice = 0
+			}
+		}
+	}
 }

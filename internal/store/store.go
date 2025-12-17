@@ -14,17 +14,34 @@ type Store struct {
 
 // New creates a new Store and initializes the schema
 func New(dbPath string) (*Store, error) {
+	// For in-memory databases, use shared cache mode so multiple connections
+	// can access the same database. This is required for concurrent access.
+	if dbPath == ":memory:" {
+		dbPath = "file::memory:?cache=shared"
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
 
-	s := &Store{db: db}
-	if err := s.initSchema(); err != nil {
-		db.Close()
-		return nil, err
+	// Configure SQLite for concurrent access
+	// WAL mode allows concurrent readers while writing
+	// busy_timeout makes writers wait instead of failing immediately
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
 	}
-	if err := s.InitSettlementSchema(); err != nil {
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+
+	s := &Store{db: db}
+	if err := s.Migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -35,52 +52,6 @@ func New(dbPath string) (*Store, error) {
 // Close closes the database connection
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-func (s *Store) initSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS users (
-		id TEXT PRIMARY KEY,
-		username TEXT UNIQUE NOT NULL,
-		password_hash TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS accounts (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL REFERENCES users(id),
-		balance INTEGER NOT NULL DEFAULT 100000000,  -- $1,000,000 in cents
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS positions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		account_id TEXT NOT NULL REFERENCES accounts(id),
-		symbol TEXT NOT NULL,
-		quantity INTEGER NOT NULL DEFAULT 0,
-		avg_price INTEGER NOT NULL DEFAULT 0,  -- in cents
-		realized_pnl INTEGER NOT NULL DEFAULT 0,  -- in cents
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(account_id, symbol)
-	);
-
-	CREATE TABLE IF NOT EXISTS trade_history (
-		id TEXT PRIMARY KEY,
-		account_id TEXT NOT NULL REFERENCES accounts(id),
-		symbol TEXT NOT NULL,
-		side TEXT NOT NULL,  -- 'buy' or 'sell'
-		price INTEGER NOT NULL,
-		quantity INTEGER NOT NULL,
-		pnl INTEGER NOT NULL DEFAULT 0,  -- realized P&L from this trade
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
-	CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id);
-	CREATE INDEX IF NOT EXISTS idx_trade_history_account ON trade_history(account_id);
-	`
-	_, err := s.db.Exec(schema)
-	return err
 }
 
 // User represents a registered user

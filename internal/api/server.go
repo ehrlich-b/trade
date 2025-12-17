@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"trade/internal/orderbook"
 	"trade/internal/store"
@@ -16,27 +18,59 @@ import (
 )
 
 type Server struct {
-	book     *orderbook.OrderBook
-	hub      *Hub
-	store    *store.Store
-	sessions *SessionStore
-	staticFS fs.FS
-	upgrader websocket.Upgrader
+	book          *orderbook.OrderBook
+	hub           *Hub
+	store         *store.Store
+	sessions      *SessionStore
+	rateLimiter   *RateLimiter
+	staticFS      fs.FS
+	upgrader      websocket.Upgrader
+	onTradeCallbacks []func(orderbook.Trade)
+	corsOrigins   []string // Allowed CORS origins (empty = allow all)
 }
 
 func NewServer(book *orderbook.OrderBook, st *store.Store, staticFS fs.FS) *Server {
-	return &Server{
-		book:     book,
-		hub:      NewHub(),
-		store:    st,
-		sessions: NewSessionStore(),
-		staticFS: staticFS,
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins for dev
-			},
+	s := &Server{
+		book:        book,
+		hub:         NewHub(),
+		store:       st,
+		sessions:    NewSessionStore(st),
+		rateLimiter: NewRateLimiter(100, 1*time.Minute), // 100 requests per minute per IP
+		staticFS:    staticFS,
+	}
+	// Default upgrader with configurable origin check
+	s.upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return s.checkCORSOrigin(r.Header.Get("Origin"))
 		},
 	}
+	return s
+}
+
+// SetCORSOrigins sets the allowed CORS origins.
+// Pass an empty slice to allow all origins (default, for development).
+// Pass specific origins like ["http://localhost:3000", "https://trade.example.com"] for production.
+func (s *Server) SetCORSOrigins(origins []string) {
+	s.corsOrigins = origins
+}
+
+// checkCORSOrigin checks if an origin is allowed
+func (s *Server) checkCORSOrigin(origin string) bool {
+	// Empty list = allow all (development mode)
+	if len(s.corsOrigins) == 0 {
+		return true
+	}
+	// Empty origin header = same-origin request, always allow
+	if origin == "" {
+		return true
+	}
+	// Check against whitelist
+	for _, allowed := range s.corsOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Router() http.Handler {
@@ -44,10 +78,17 @@ func (s *Server) Router() http.Handler {
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// Rate limiting disabled - was too aggressive
+	// r.Use(s.rateLimiter.Middleware)
+	// Configure CORS based on allowed origins
+	allowedOrigins := s.corsOrigins
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"*"} // Allow all in development mode
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-User-ID", "X-Session-Token"},
 		AllowCredentials: true,
 	}))
 
@@ -65,6 +106,7 @@ func (s *Server) Router() http.Handler {
 
 		// Trading routes
 		r.Post("/orders", s.submitOrder)
+		r.Get("/orders", s.getOrders) // Get user's open orders
 		r.Delete("/orders/{id}", s.cancelOrder)
 		r.Get("/book", s.getBook)
 		r.Get("/trades", s.getTrades)
@@ -195,15 +237,31 @@ func (s *Server) submitOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update position tracking if user is authenticated
-	if accountID != "" && s.store != nil {
+	// Update position tracking for BOTH sides of each trade
+	// This is critical - without this, counterparty positions don't update!
+	if s.store != nil {
 		for _, trade := range trades {
-			// Determine if we're the buyer or seller
-			if trade.BuyerID == userID {
-				s.store.UpdatePositionOnTrade(accountID, trade.Symbol, "buy", trade.Price, trade.Quantity)
+			log.Printf("[POSITION] Trade: buyer=%s seller=%s price=%d qty=%d symbol=%s",
+				trade.BuyerID, trade.SellerID, trade.Price, trade.Quantity, trade.Symbol)
+			// Update buyer's position (skip market maker - it has no real account)
+			if trade.BuyerID != "" && trade.BuyerID != "market_maker" {
+				buyerAccount, err := s.store.GetAccountByUserID(trade.BuyerID)
+				if err == nil {
+					log.Printf("[POSITION] Updating buyer %s (account %s)", trade.BuyerID, buyerAccount.ID)
+					s.store.UpdatePositionOnTrade(buyerAccount.ID, trade.Symbol, "buy", trade.Price, trade.Quantity)
+				} else {
+					log.Printf("[POSITION] ERROR getting buyer account: %v", err)
+				}
 			}
-			if trade.SellerID == userID {
-				s.store.UpdatePositionOnTrade(accountID, trade.Symbol, "sell", trade.Price, trade.Quantity)
+			// Update seller's position (skip market maker - it has no real account)
+			if trade.SellerID != "" && trade.SellerID != "market_maker" {
+				sellerAccount, err := s.store.GetAccountByUserID(trade.SellerID)
+				if err == nil {
+					log.Printf("[POSITION] Updating seller %s (account %s)", trade.SellerID, sellerAccount.ID)
+					s.store.UpdatePositionOnTrade(sellerAccount.ID, trade.Symbol, "sell", trade.Price, trade.Quantity)
+				} else {
+					log.Printf("[POSITION] ERROR getting seller account: %v", err)
+				}
 			}
 		}
 	}
@@ -215,6 +273,8 @@ func (s *Server) submitOrder(w http.ResponseWriter, r *http.Request) {
 			"type":  "trade",
 			"trade": trade,
 		})
+		// Notify trade callbacks (e.g., market maker position tracking)
+		s.notifyTradeCallbacks(trade)
 	}
 
 	resp := OrderResponse{
@@ -225,11 +285,49 @@ func (s *Server) submitOrder(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (s *Server) getOrders(w http.ResponseWriter, r *http.Request) {
+	session := s.getSession(r)
+	if session == nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	orders := s.book.GetOrdersByUser(session.UserID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(orders)
+}
+
 func (s *Server) cancelOrder(w http.ResponseWriter, r *http.Request) {
 	orderID := chi.URLParam(r, "id")
 	if orderID == "" {
 		http.Error(w, "order id required", http.StatusBadRequest)
 		return
+	}
+
+	// Check order ownership
+	order, exists := s.book.GetOrder(orderID)
+	if !exists {
+		http.Error(w, "order not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify the requester owns this order
+	session := s.getSession(r)
+	if session != nil {
+		// Authenticated user must own the order
+		if order.UserID != session.UserID {
+			http.Error(w, "unauthorized: you can only cancel your own orders", http.StatusForbidden)
+			return
+		}
+	} else {
+		// Unauthenticated - check if user_id header matches (for anonymous users)
+		// This is less secure but maintains backward compatibility
+		userID := r.Header.Get("X-User-ID")
+		if userID != "" && order.UserID != userID {
+			http.Error(w, "unauthorized: you can only cancel your own orders", http.StatusForbidden)
+			return
+		}
 	}
 
 	if err := s.book.Cancel(orderID); err != nil {
@@ -270,9 +368,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		hub:  s.hub,
-		conn: conn,
-		send: make(chan []byte, 256),
+		hub:      s.hub,
+		conn:     conn,
+		send:     make(chan []byte, 256),
+		lastPong: time.Now(),
 	}
 
 	s.hub.Register(client)
@@ -300,4 +399,52 @@ func (s *Server) broadcastBookUpdate() {
 // BroadcastBook is a public method for external callers (like market maker) to trigger book updates
 func (s *Server) BroadcastBook() {
 	s.broadcastBookUpdate()
+}
+
+// HandleTrade processes a trade from external sources (like market maker)
+// Updates positions for both parties, broadcasts via WebSocket, and notifies callbacks
+func (s *Server) HandleTrade(trade orderbook.Trade) {
+	// Update positions for both buyer and seller
+	if s.store != nil {
+		if trade.BuyerID != "" {
+			buyerAccount, err := s.store.GetAccountByUserID(trade.BuyerID)
+			if err == nil {
+				s.store.UpdatePositionOnTrade(buyerAccount.ID, trade.Symbol, "buy", trade.Price, trade.Quantity)
+			}
+		}
+		if trade.SellerID != "" {
+			sellerAccount, err := s.store.GetAccountByUserID(trade.SellerID)
+			if err == nil {
+				s.store.UpdatePositionOnTrade(sellerAccount.ID, trade.Symbol, "sell", trade.Price, trade.Quantity)
+			}
+		}
+	}
+
+	// Broadcast trade via WebSocket
+	s.hub.Broadcast(map[string]interface{}{
+		"type":  "trade",
+		"trade": trade,
+	})
+
+	// Notify trade callbacks
+	s.notifyTradeCallbacks(trade)
+}
+
+// OnTrade registers a callback to be called when trades occur
+func (s *Server) OnTrade(fn func(orderbook.Trade)) {
+	s.onTradeCallbacks = append(s.onTradeCallbacks, fn)
+}
+
+// notifyTradeCallbacks calls all registered trade callbacks
+func (s *Server) notifyTradeCallbacks(trade orderbook.Trade) {
+	for _, fn := range s.onTradeCallbacks {
+		fn(trade)
+	}
+}
+
+// Shutdown stops internal goroutines (session cleanup, rate limiter, hub, etc.)
+func (s *Server) Shutdown() {
+	s.sessions.Stop()
+	s.rateLimiter.Stop()
+	s.hub.Stop()
 }

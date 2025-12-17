@@ -26,27 +26,6 @@ type SettlementResult struct {
 	PreviousPnL int64
 }
 
-// InitSettlementSchema adds settlement-related tables
-func (s *Store) InitSettlementSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS daily_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		account_id TEXT NOT NULL REFERENCES accounts(id),
-		date DATE NOT NULL,
-		balance INTEGER NOT NULL,
-		realized_pnl INTEGER NOT NULL,
-		positions TEXT,  -- JSON
-		is_bankrupt BOOLEAN DEFAULT FALSE,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(account_id, date)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_snapshots_date ON daily_snapshots(date);
-	`
-	_, err := s.db.Exec(schema)
-	return err
-}
-
 // SettleAccount performs end-of-day settlement for a single account
 // markPrice is the current market price to use for unrealized P&L
 func (s *Store) SettleAccount(accountID string, symbol string, markPrice int64) (*SettlementResult, error) {
@@ -76,19 +55,21 @@ func (s *Store) SettleAccount(accountID string, symbol string, markPrice int64) 
 		realizedPnL = 0
 	}
 
-	// Calculate unrealized P&L
+	// Calculate unrealized P&L (for reporting)
 	var unrealizedPnL int64
-	if quantity > 0 {
+	if quantity != 0 {
 		unrealizedPnL = quantity * (markPrice - avgPrice)
-	} else if quantity < 0 {
-		unrealizedPnL = quantity * (markPrice - avgPrice) // Negative quantity makes this work
 	}
 
 	// Total P&L
 	totalPnL := realizedPnL + unrealizedPnL
 
-	// Final balance after mark-to-market
-	finalBalance := balance + unrealizedPnL
+	// With cash flow model, settlement adds back the full position value at mark price
+	// For long positions: you sell your shares at mark price, receiving cash
+	// For short positions: you buy back shares at mark price, paying cash
+	// Formula: cash += quantity * markPrice (works for both long and short)
+	positionValueAtMark := quantity * markPrice
+	finalBalance := balance + positionValueAtMark
 
 	result := &SettlementResult{
 		AccountID:   accountID,
@@ -233,7 +214,7 @@ func (s *Store) ResetAccount(accountID string) error {
 	return tx.Commit()
 }
 
-// CheckBankruptcy returns true if account balance is at or below zero
+// CheckBankruptcy returns true if net worth (cash + position value at mark) is at or below zero
 func (s *Store) CheckBankruptcy(accountID string, symbol string, markPrice int64) (bool, int64, error) {
 	var balance int64
 	err := s.db.QueryRow("SELECT balance FROM accounts WHERE id = ?", accountID).Scan(&balance)
@@ -241,24 +222,20 @@ func (s *Store) CheckBankruptcy(accountID string, symbol string, markPrice int64
 		return false, 0, err
 	}
 
-	// Get position for unrealized P&L
-	var quantity, avgPrice int64
+	// Get position
+	var quantity int64
 	err = s.db.QueryRow(
-		"SELECT quantity, avg_price FROM positions WHERE account_id = ? AND symbol = ?",
+		"SELECT quantity FROM positions WHERE account_id = ? AND symbol = ?",
 		accountID, symbol,
-	).Scan(&quantity, &avgPrice)
+	).Scan(&quantity)
 	if err != nil {
 		// No position
 		quantity = 0
-		avgPrice = 0
 	}
 
-	// Calculate unrealized P&L
-	var unrealizedPnL int64
-	if quantity != 0 {
-		unrealizedPnL = quantity * (markPrice - avgPrice)
-	}
-
-	effectiveBalance := balance + unrealizedPnL
-	return effectiveBalance <= 0, effectiveBalance, nil
+	// With cash flow model, net worth = cash + position value at mark price
+	// Position value = quantity * markPrice (signed: positive for long, negative for short)
+	positionValueAtMark := quantity * markPrice
+	netWorth := balance + positionValueAtMark
+	return netWorth <= 0, netWorth, nil
 }

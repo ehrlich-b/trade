@@ -20,16 +20,60 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-// SessionStore manages active sessions
+// SessionStore manages active sessions with database persistence
 type SessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	store  *store.Store
+	mu     sync.RWMutex
+	cache  map[string]*Session // In-memory cache for performance
+	stopCh chan struct{}
 }
 
-func NewSessionStore() *SessionStore {
-	return &SessionStore{
-		sessions: make(map[string]*Session),
+func NewSessionStore(s *store.Store) *SessionStore {
+	ss := &SessionStore{
+		store:  s,
+		cache:  make(map[string]*Session),
+		stopCh: make(chan struct{}),
 	}
+	go ss.cleanupLoop()
+	return ss
+}
+
+// cleanupLoop periodically removes expired sessions
+func (ss *SessionStore) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			ss.cleanup()
+		case <-ss.stopCh:
+			return
+		}
+	}
+}
+
+// cleanup removes all expired sessions
+func (ss *SessionStore) cleanup() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	// Clean in-memory cache
+	now := time.Now()
+	for token, session := range ss.cache {
+		if now.After(session.ExpiresAt) {
+			delete(ss.cache, token)
+		}
+	}
+	// Clean database
+	if ss.store != nil {
+		ss.store.CleanupExpiredSessions()
+	}
+}
+
+// Stop halts the cleanup goroutine
+func (ss *SessionStore) Stop() {
+	close(ss.stopCh)
 }
 
 func (ss *SessionStore) Create(userID, accountID string) *Session {
@@ -37,31 +81,63 @@ func (ss *SessionStore) Create(userID, accountID string) *Session {
 	defer ss.mu.Unlock()
 
 	token := generateToken()
+	expiresAt := time.Now().Add(24 * time.Hour)
 	session := &Session{
 		Token:     token,
 		UserID:    userID,
 		AccountID: accountID,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: expiresAt,
 	}
-	ss.sessions[token] = session
+
+	// Save to database
+	if ss.store != nil {
+		ss.store.CreateSession(token, userID, accountID, expiresAt)
+	}
+
+	// Cache in memory
+	ss.cache[token] = session
 	return session
 }
 
 func (ss *SessionStore) Get(token string) *Session {
 	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-
-	session, ok := ss.sessions[token]
-	if !ok || time.Now().After(session.ExpiresAt) {
-		return nil
+	// Check cache first
+	if session, ok := ss.cache[token]; ok {
+		if time.Now().Before(session.ExpiresAt) {
+			ss.mu.RUnlock()
+			return session
+		}
 	}
-	return session
+	ss.mu.RUnlock()
+
+	// Not in cache or expired, check database
+	if ss.store != nil {
+		dbSession, err := ss.store.GetSession(token)
+		if err == nil && dbSession != nil {
+			session := &Session{
+				Token:     dbSession.Token,
+				UserID:    dbSession.UserID,
+				AccountID: dbSession.AccountID,
+				ExpiresAt: dbSession.ExpiresAt,
+			}
+			// Update cache
+			ss.mu.Lock()
+			ss.cache[token] = session
+			ss.mu.Unlock()
+			return session
+		}
+	}
+
+	return nil
 }
 
 func (ss *SessionStore) Delete(token string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	delete(ss.sessions, token)
+	delete(ss.cache, token)
+	if ss.store != nil {
+		ss.store.DeleteSession(token)
+	}
 }
 
 func generateToken() string {

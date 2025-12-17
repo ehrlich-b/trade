@@ -1,32 +1,78 @@
 # TODO
 
-## Current Focus: MVP
+## Core UX - COMPLETE (2025-12-16)
 
-Get to "is this fun?" as fast as possible.
+All core issues are fixed. Full test coverage with Go unit tests and Playwright e2e tests.
 
-**Goal: Playable state by end of Phase 4** - ACHIEVED
+### Core Issues - ALL FIXED
 
-### Phase 5: Synthetic Market
-- [x] Random walk price generator
-- [x] Market maker bot (quotes around synthetic mid)
-- [x] Bot order management (cancel stale quotes, requote)
+#### 1. Open Orders Display - DONE
+- [x] Show user's pending orders in the book or separate panel
+- [x] Add cancel buttons next to each open order
+- [x] Added GET /api/orders endpoint to fetch user's open orders
+- [x] Created OpenOrders component in center panel
 
-### Phase 6: Accounts & Auth
-- [x] SQLite schema for users
-- [x] Simple auth (username/password)
-- [x] $1M starting margin per account
-- [x] Position tracking per user
-- [x] P&L calculation
+#### 2. Symbol Selector - DONE
+- [x] Add dropdown to select trading symbol (even with just "FAKE" for now)
+- [x] Header shows selected symbol prominently
+- [x] Ready for multi-symbol support
 
-### Phase 7: Daily Reset
-- [x] End-of-day settlement logic
-- [x] Bankruptcy detection
-- [x] Account reset mechanics
-- [x] Persist daily snapshots
+#### 3. Position Display Not Working - FIXED
+- [x] Debug why positions show 0 after trades
+  - **BUG FOUND**: Only submitter positions updated, not counterparty!
+  - **FIXED in server.go**: Now updates BOTH buyer AND seller positions
+  - **FIXED in market/maker.go**: MM trades now notify server for counterparty updates
+- [x] Verify backend returns correct position data
+- [x] Cash/Position/Net Worth should now reflect reality
+
+#### 4. Input Validation - DONE
+- [x] Quantity must be > 0, integer - validated with inline error
+- [x] Price must be > 0 for limit orders - validated with inline error
+- [x] Show error messages inline, not alerts
+- [x] Added quick quantity buttons (10, 25, 50, 100)
+
+#### 5. UI Layout Overhaul - DONE
+- [x] Header now shows: Symbol Selector | Prices | Account Summary (Cash/Position/P&L/Net Worth) | Status/User
+- [x] Account summary always visible in header
+- [x] Order form is compact with quick quantity buttons
+- [x] Leaderboard/Trades as tabbed view (not both visible)
+- [x] Position details in center panel with grid layout
+- [x] Cleaner, more professional dark theme
+
+UI enhancements (completed):
+- [x] Add "Open Orders" panel showing pending orders with cancel buttons
+- [x] Highlight MY orders in the order book with different color (blue background + dot marker)
 
 ---
 
-## Backlog (Post-MVP)
+## Recently Fixed (2025-12-16)
+- [x] **Persistent sessions**: Sessions now stored in database, survive server restarts
+- [x] **401 error handling**: Frontend auto-logs out on expired/invalid tokens
+- [x] **Price input validation**: Rounds to 2 decimal places, prevents precision errors
+- [x] **Playwright e2e tests**: Comprehensive frontend tests covering OpenOrders, position details, P&L
+- [x] **Fixed market maker account errors**: Skip position tracking for market_maker user
+- [x] **Database cleanup on test runs**: Fresh DB for each test run
+- [x] Test commands: `make test` (Go unit tests), `make test-e2e` (Playwright browser tests)
+
+## Previously Fixed (2025-12-15)
+- [x] **Critical position tracking bug**: Both buyer AND seller positions now update on trades
+- [x] **Market maker callback**: MM trades now notify server for counterparty position updates
+- [x] Database migration system added
+- [x] Order cancel authorization (only owner can cancel)
+- [x] Rate limiting (100 req/min/IP)
+- [x] CORS configurable via -cors flag
+- [x] Graceful shutdown with signal handling
+- [x] Session expiration enforcement
+- [x] Market maker position/P&L tracking
+- [x] Self-trade prevention
+- [x] WebSocket dead connection pruning
+- [x] Store/market package test coverage
+- [x] Error boundary for React
+- [x] Loading state for order submission
+
+---
+
+## Backlog (After Core UX Fixed)
 
 ### Real Data Integration
 - [ ] Polygon.io free tier integration
@@ -35,29 +81,29 @@ Get to "is this fun?" as fast as possible.
 - [ ] Real-time feed tier for players
 
 ### Enhanced Features
-- [ ] Multiple stocks
+- [ ] Multiple stocks (after symbol selector works)
 - [ ] Stop orders
 - [ ] IOC/FOK order types
-- [x] Leaderboard backend API (`GET /api/leaderboard`)
-- [ ] Leaderboard frontend UI
-- [ ] Trade history charts
+- [ ] Trade history charts (lightweight-charts)
 - [ ] Bot API for player algorithms
+- [ ] Keyboard shortcuts (Enter to submit, Esc to cancel)
+- [ ] Quick quantity buttons (10, 25, 50, 100, MAX)
 
 ### Infrastructure
-- [x] Embed frontend in Go binary
-- [x] Goreleaser for cross-platform builds (linux/darwin/windows, amd64/arm64)
-- [x] Pure-Go SQLite (modernc.org/sqlite) for static binaries without CGO
 - [ ] Basic monitoring/logging
+- [ ] Performance metrics
 
 ---
 
-## Known Issues (MVP-acceptable)
+## Design Principles (Reminder)
 
-- [ ] Position P&L calculation edge cases (closing shorts, position reversal)
-- [x] USER_ID regenerates on page refresh (fixed: auth persists in localStorage)
-- [x] Trade/Order JSON serialization missing snake_case tags (fixed: added json tags)
-- [ ] Trades slice grows unbounded in memory (fine for short sessions)
-- [ ] CORS wide open (fine for dev, tighten for prod)
+1. **Trading Terminal First** - This should feel like a Bloomberg terminal, not a web form
+2. **Information Density** - Traders want to see everything at once
+3. **Keyboard Friendly** - Power users hate clicking
+4. **Real-time Feedback** - Every action should have immediate visual feedback
+5. **Position Awareness** - User should ALWAYS know their position and P&L
+
+---
 
 ## Open Questions
 
@@ -65,46 +111,3 @@ Get to "is this fun?" as fast as possible.
 - Market maker personality variations?
 - Overnight position rules?
 - Position limits needed?
-- Initial liquidity seeding strategy?
-
----
-
-## Completed
-
-### Phase 1: Order Book Engine
-- [x] Initialize Go module and project structure
-- [x] Implement core order book (bids/asks sorted maps, price-time priority)
-- [x] Limit order placement and matching
-- [x] Market order execution
-- [x] Order cancellation
-- [x] Unit tests for matching engine
-
-### Phase 2: REST API
-- [x] Basic HTTP server setup (chi router)
-- [x] POST /api/orders - submit order
-- [x] DELETE /api/orders/:id - cancel order
-- [x] GET /api/book - current order book state
-- [x] GET /api/trades - recent trades
-
-### Phase 3: WebSocket
-- [x] WebSocket endpoint for real-time updates (/ws)
-- [x] Broadcast order book changes
-- [x] Broadcast trade executions
-- [x] Client subscription management
-
-### Phase 4: Minimal Frontend
-- [x] Initialize TypeScript/React/Vite project in web/
-- [x] Order book depth visualization with depth bars
-- [x] Order entry form (limit/market, buy/sell)
-- [x] Recent trades list (highlights your trades)
-- [x] Current positions display with P&L
-- [x] WebSocket connection to backend with auto-reconnect
-- [x] Login/Register UI with localStorage persistence
-- [x] Server-side position tracking integration
-
-### Phase 8: Testing & Build
-- [x] Comprehensive e2e test suite (auth, trading, positions, P&L, WebSocket)
-- [x] Static binary with embedded frontend
-- [x] Cross-platform builds via goreleaser
-- [x] Margin validation (prevents over-leveraging)
-- [x] Balance/Net Worth UI display (always visible account summary)

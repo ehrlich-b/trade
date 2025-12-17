@@ -34,11 +34,11 @@ func (s *Store) GetPosition(accountID, symbol string) (*Position, error) {
 // Returns nil if the order is allowed, ErrInsufficientMargin if not.
 //
 // Margin rules:
-// - Each share of position (long or short) requires margin equal to its value
-// - Available margin = balance - sum(|position_qty| * estimated_price)
-// - Order requires margin for the worst-case resulting position
+// - Net worth = cash + position value (position value is signed: long positive, short negative)
+// - Maximum position exposure (|position value|) must not exceed net worth
+// - This allows trading while preventing excessive leverage
 func (s *Store) CheckMarginForOrder(accountID, symbol string, side string, quantity int64, estimatedPrice int64) error {
-	// Get current account balance
+	// Get current account balance (cash)
 	var balance int64
 	err := s.db.QueryRow("SELECT balance FROM accounts WHERE id = ?", accountID).Scan(&balance)
 	if err != nil {
@@ -51,6 +51,12 @@ func (s *Store) CheckMarginForOrder(accountID, symbol string, side string, quant
 		return err
 	}
 
+	// Calculate current position value (signed: positive for long, negative for short)
+	currentPositionValue := pos.Quantity * estimatedPrice
+
+	// Net worth = cash + position value
+	netWorth := balance + currentPositionValue
+
 	// Calculate new position after order
 	var newQty int64
 	if side == "buy" {
@@ -59,18 +65,17 @@ func (s *Store) CheckMarginForOrder(accountID, symbol string, side string, quant
 		newQty = pos.Quantity - quantity
 	}
 
-	// Calculate margin required for new position
-	// Use absolute value since both long and short positions require margin
-	var newPositionValue int64
+	// Calculate new position value (absolute, since both long and short require margin)
+	var newPositionExposure int64
 	if newQty > 0 {
-		newPositionValue = newQty * estimatedPrice
+		newPositionExposure = newQty * estimatedPrice
 	} else {
-		newPositionValue = (-newQty) * estimatedPrice
+		newPositionExposure = (-newQty) * estimatedPrice
 	}
 
-	// Check if new position value exceeds balance
-	// This prevents positions larger than your account can cover
-	if newPositionValue > balance {
+	// Margin requirement: position exposure cannot exceed net worth
+	// This prevents taking on more position than your account can cover
+	if newPositionExposure > netWorth {
 		return ErrInsufficientMargin
 	}
 
@@ -193,10 +198,19 @@ func (s *Store) UpdatePositionOnTrade(accountID, symbol string, side string, pri
 		return 0, err
 	}
 
-	// Update account balance with realized P&L
+	// Update account balance:
+	// - Buys decrease cash (negative)
+	// - Sells increase cash (positive)
+	// This reflects actual cash flow, not just realized P&L
+	var cashFlow int64
+	if side == "buy" {
+		cashFlow = -(price * quantity) // Spending cash to buy
+	} else {
+		cashFlow = price * quantity // Receiving cash from sale
+	}
 	_, err = tx.Exec(
-		"UPDATE accounts SET balance = balance + ? WHERE id = (SELECT id FROM accounts WHERE user_id = (SELECT user_id FROM accounts WHERE id = ?) LIMIT 1)",
-		realizedPnL, accountID,
+		"UPDATE accounts SET balance = balance + ? WHERE id = ?",
+		cashFlow, accountID,
 	)
 	if err != nil {
 		return 0, err

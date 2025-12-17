@@ -8,6 +8,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	// MaxTrades is the maximum number of trades to keep in memory
+	MaxTrades = 1000
+)
+
 // PriceLevel holds all orders at a specific price
 type PriceLevel struct {
 	Price  int64
@@ -31,8 +36,7 @@ type OrderBook struct {
 	asks   []*PriceLevel // Sorted ascending by price (best ask first)
 	orders map[string]*Order
 
-	trades     []Trade
-	tradeIndex int
+	trades []Trade
 }
 
 func New(symbol string) *OrderBook {
@@ -79,20 +83,32 @@ func (ob *OrderBook) matchMarketOrder(order *Order) []Trade {
 
 	if order.Side == Buy {
 		// Match against asks (ascending price)
-		for len(ob.asks) > 0 && !order.IsFilled() {
-			level := ob.asks[0]
-			trades = append(trades, ob.matchAtLevel(order, level)...)
+		levelIdx := 0
+		for levelIdx < len(ob.asks) && !order.IsFilled() {
+			level := ob.asks[levelIdx]
+			levelTrades := ob.matchAtLevel(order, level)
+			trades = append(trades, levelTrades...)
 			if len(level.Orders) == 0 {
-				ob.asks = ob.asks[1:]
+				ob.asks = append(ob.asks[:levelIdx], ob.asks[levelIdx+1:]...)
+				// Don't increment levelIdx since we removed the current level
+			} else if len(levelTrades) == 0 {
+				// No trades made at this level (all self-trades), skip to next
+				levelIdx++
 			}
 		}
 	} else {
 		// Match against bids (descending price)
-		for len(ob.bids) > 0 && !order.IsFilled() {
-			level := ob.bids[0]
-			trades = append(trades, ob.matchAtLevel(order, level)...)
+		levelIdx := 0
+		for levelIdx < len(ob.bids) && !order.IsFilled() {
+			level := ob.bids[levelIdx]
+			levelTrades := ob.matchAtLevel(order, level)
+			trades = append(trades, levelTrades...)
 			if len(level.Orders) == 0 {
-				ob.bids = ob.bids[1:]
+				ob.bids = append(ob.bids[:levelIdx], ob.bids[levelIdx+1:]...)
+				// Don't increment levelIdx since we removed the current level
+			} else if len(levelTrades) == 0 {
+				// No trades made at this level (all self-trades), skip to next
+				levelIdx++
 			}
 		}
 	}
@@ -105,26 +121,38 @@ func (ob *OrderBook) matchLimitOrder(order *Order) []Trade {
 
 	if order.Side == Buy {
 		// Match against asks where ask price <= order price
-		for len(ob.asks) > 0 && !order.IsFilled() {
-			level := ob.asks[0]
+		levelIdx := 0
+		for levelIdx < len(ob.asks) && !order.IsFilled() {
+			level := ob.asks[levelIdx]
 			if level.Price > order.Price {
 				break // No more matching prices
 			}
-			trades = append(trades, ob.matchAtLevel(order, level)...)
+			levelTrades := ob.matchAtLevel(order, level)
+			trades = append(trades, levelTrades...)
 			if len(level.Orders) == 0 {
-				ob.asks = ob.asks[1:]
+				ob.asks = append(ob.asks[:levelIdx], ob.asks[levelIdx+1:]...)
+				// Don't increment levelIdx since we removed the current level
+			} else if len(levelTrades) == 0 {
+				// No trades made at this level (all self-trades), skip to next
+				levelIdx++
 			}
 		}
 	} else {
 		// Match against bids where bid price >= order price
-		for len(ob.bids) > 0 && !order.IsFilled() {
-			level := ob.bids[0]
+		levelIdx := 0
+		for levelIdx < len(ob.bids) && !order.IsFilled() {
+			level := ob.bids[levelIdx]
 			if level.Price < order.Price {
 				break // No more matching prices
 			}
-			trades = append(trades, ob.matchAtLevel(order, level)...)
+			levelTrades := ob.matchAtLevel(order, level)
+			trades = append(trades, levelTrades...)
 			if len(level.Orders) == 0 {
-				ob.bids = ob.bids[1:]
+				ob.bids = append(ob.bids[:levelIdx], ob.bids[levelIdx+1:]...)
+				// Don't increment levelIdx since we removed the current level
+			} else if len(levelTrades) == 0 {
+				// No trades made at this level (all self-trades), skip to next
+				levelIdx++
 			}
 		}
 	}
@@ -134,9 +162,17 @@ func (ob *OrderBook) matchLimitOrder(order *Order) []Trade {
 
 func (ob *OrderBook) matchAtLevel(incoming *Order, level *PriceLevel) []Trade {
 	var trades []Trade
+	orderIdx := 0
 
-	for len(level.Orders) > 0 && !incoming.IsFilled() {
-		resting := level.Orders[0]
+	for orderIdx < len(level.Orders) && !incoming.IsFilled() {
+		resting := level.Orders[orderIdx]
+
+		// Self-trade prevention: skip orders from the same user
+		if resting.UserID == incoming.UserID {
+			orderIdx++
+			continue
+		}
+
 		matchQty := min(incoming.Remaining(), resting.Remaining())
 
 		incoming.Filled += matchQty
@@ -163,9 +199,18 @@ func (ob *OrderBook) matchAtLevel(incoming *Order, level *PriceLevel) []Trade {
 		trades = append(trades, trade)
 		ob.trades = append(ob.trades, trade)
 
+		// Prune old trades if we exceed the maximum
+		if len(ob.trades) > MaxTrades {
+			// Keep only the most recent MaxTrades
+			ob.trades = ob.trades[len(ob.trades)-MaxTrades:]
+		}
+
 		if resting.IsFilled() {
 			delete(ob.orders, resting.ID)
-			level.Orders = level.Orders[1:]
+			level.Orders = append(level.Orders[:orderIdx], level.Orders[orderIdx+1:]...)
+			// Don't increment orderIdx since we removed the current element
+		} else {
+			orderIdx++
 		}
 	}
 
@@ -345,4 +390,18 @@ func (ob *OrderBook) MidPrice() int64 {
 		return 0
 	}
 	return (bid + ask) / 2
+}
+
+// GetOrdersByUser returns all open orders for a specific user
+func (ob *OrderBook) GetOrdersByUser(userID string) []*Order {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+
+	var result []*Order
+	for _, order := range ob.orders {
+		if order.UserID == userID {
+			result = append(result, order)
+		}
+	}
+	return result
 }

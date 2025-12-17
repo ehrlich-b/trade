@@ -27,6 +27,18 @@ export interface Position {
   pnl: number
 }
 
+export interface Order {
+  id: string
+  user_id: string
+  symbol: string
+  side: number // 0 = Buy, 1 = Sell
+  type: number // 0 = Limit, 1 = Market
+  price: number // in cents
+  quantity: number
+  filled: number
+  timestamp: string
+}
+
 export type WSMessage =
   | { type: 'book'; book: BookSnapshot }
   | { type: 'trade'; trade: Trade }

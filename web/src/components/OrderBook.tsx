@@ -1,14 +1,15 @@
-import { BookSnapshot } from '../types'
+import { BookSnapshot, Order } from '../types'
 
 interface Props {
   book: BookSnapshot | null
+  userOrders?: Order[]
 }
 
 function formatPrice(cents: number): string {
   return (cents / 100).toFixed(2)
 }
 
-function OrderBook({ book }: Props) {
+function OrderBook({ book, userOrders = [] }: Props) {
   if (!book) {
     return <div style={styles.loading}>Loading order book...</div>
   }
@@ -18,6 +19,10 @@ function OrderBook({ book }: Props) {
     ...book.asks.map((a) => a.quantity),
     1
   )
+
+  // Build sets of prices where user has orders (by side)
+  const userBidPrices = new Set(userOrders.filter(o => o.side === 0).map(o => o.price))
+  const userAskPrices = new Set(userOrders.filter(o => o.side === 1).map(o => o.price))
 
   return (
     <div style={styles.container}>
@@ -29,19 +34,28 @@ function OrderBook({ book }: Props) {
       </div>
 
       <div style={styles.asks}>
-        {[...book.asks].reverse().slice(0, 10).map((level, i) => (
-          <div key={`ask-${i}`} style={styles.row}>
-            <div
-              style={{
-                ...styles.depthBar,
-                ...styles.askBar,
-                width: `${(level.quantity / maxQty) * 100}%`,
-              }}
-            />
-            <span style={styles.askPrice}>${formatPrice(level.price)}</span>
-            <span style={styles.qty}>{level.quantity}</span>
-          </div>
-        ))}
+        {[...book.asks].reverse().slice(0, 10).map((level, i) => {
+          const hasUserOrder = userAskPrices.has(level.price)
+          return (
+            <div key={`ask-${i}`} style={{
+              ...styles.row,
+              ...(hasUserOrder ? styles.userOrderRow : {}),
+            }}>
+              <div
+                style={{
+                  ...styles.depthBar,
+                  ...styles.askBar,
+                  width: `${(level.quantity / maxQty) * 100}%`,
+                }}
+              />
+              <span style={styles.askPrice}>
+                {hasUserOrder && <span style={styles.userMarker}>●</span>}
+                ${formatPrice(level.price)}
+              </span>
+              <span style={styles.qty}>{level.quantity}</span>
+            </div>
+          )
+        })}
       </div>
 
       <div style={styles.spread}>
@@ -51,19 +65,28 @@ function OrderBook({ book }: Props) {
       </div>
 
       <div style={styles.bids}>
-        {book.bids.slice(0, 10).map((level, i) => (
-          <div key={`bid-${i}`} style={styles.row}>
-            <div
-              style={{
-                ...styles.depthBar,
-                ...styles.bidBar,
-                width: `${(level.quantity / maxQty) * 100}%`,
-              }}
-            />
-            <span style={styles.bidPrice}>${formatPrice(level.price)}</span>
-            <span style={styles.qty}>{level.quantity}</span>
-          </div>
-        ))}
+        {book.bids.slice(0, 10).map((level, i) => {
+          const hasUserOrder = userBidPrices.has(level.price)
+          return (
+            <div key={`bid-${i}`} style={{
+              ...styles.row,
+              ...(hasUserOrder ? styles.userOrderRow : {}),
+            }}>
+              <div
+                style={{
+                  ...styles.depthBar,
+                  ...styles.bidBar,
+                  width: `${(level.quantity / maxQty) * 100}%`,
+                }}
+              />
+              <span style={styles.bidPrice}>
+                {hasUserOrder && <span style={styles.userMarker}>●</span>}
+                ${formatPrice(level.price)}
+              </span>
+              <span style={styles.qty}>{level.quantity}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -144,6 +167,15 @@ const styles: Record<string, React.CSSProperties> = {
   qty: {
     color: '#999',
     zIndex: 1,
+  },
+  userOrderRow: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderRadius: '2px',
+  },
+  userMarker: {
+    color: '#3b82f6',
+    marginRight: '4px',
+    fontSize: '8px',
   },
 }
 

@@ -456,10 +456,12 @@ func TestE2E_MarketBuyCreatesPosition(t *testing.T) {
 		t.Errorf("Expected realized P&L 0, got %d", posRealizedPnL)
 	}
 
-	// Verify balance (should be unchanged - we haven't closed position yet)
+	// Verify balance decreased by the cost of the purchase (cash flow model)
+	// Balance = initial - (price * quantity)
+	expectedBalance := initialBalance - (tradePrice * tradeQty)
 	newBalance := int64(account["balance"].(float64))
-	if newBalance != initialBalance {
-		t.Errorf("Expected balance unchanged at %d, got %d", initialBalance, newBalance)
+	if newBalance != expectedBalance {
+		t.Errorf("Expected balance %d after buying %d shares at %d, got %d", expectedBalance, tradeQty, tradePrice, newBalance)
 	}
 }
 
@@ -791,7 +793,6 @@ func TestE2E_Leaderboard(t *testing.T) {
 }
 
 func TestE2E_ConcurrentTrading(t *testing.T) {
-	t.Skip("Skipped: SQLite in-memory mode has locking issues under concurrent load")
 	env := setupTestEnv(t)
 	defer env.cleanup()
 
@@ -1000,6 +1001,220 @@ func TestE2E_PositionValuesNotNaN(t *testing.T) {
 	// realized_pnl can be 0 before closing position
 
 	t.Logf("Position: qty=%v, avgPrice=%v, realizedPnL=%v", qty, avgPrice, realizedPnL)
+}
+
+// TestE2E_UserLimitOrderFillByMarketMaker tests the scenario where
+// a user's limit order gets filled by market maker requotes.
+// This specifically tests the onTrade callback path.
+func TestE2E_UserLimitOrderFillByMarketMaker(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+
+	// Wire up market maker to server (like main.go does)
+	srv := api.NewServer(env.book, env.store, nil)
+	env.mm.SetOnTrade(srv.HandleTrade)
+
+	// Register user
+	token, _, _ := env.registerUser(t, "limituser", "password123")
+
+	// Get initial account
+	account := env.getAccount(t, token)
+	initialBalance := int64(account["balance"].(float64))
+	t.Logf("Initial balance: %d ($%.2f)", initialBalance, float64(initialBalance)/100)
+
+	// User submits limit BUY order above current mid price
+	// This will get filled immediately when market maker places asks
+	t.Log("Submitting limit BUY at $100.05 (should match MM asks)")
+	env.submitOrder(t, token, "buy", "limit", 10005, 10)
+
+	// Start market maker - this will requote and potentially match
+	env.mm.Start()
+	defer env.mm.Stop()
+	time.Sleep(200 * time.Millisecond) // Wait for MM to requote
+
+	// Check position
+	account = env.getAccount(t, token)
+	positions := account["positions"].([]interface{})
+	t.Logf("Positions after MM start: %d", len(positions))
+
+	// Now submit another limit order that will definitely match
+	// First check what's in the book
+	book := env.getBook(t)
+	asks := book["asks"].([]interface{})
+	if len(asks) > 0 {
+		bestAsk := int64(asks[0].(map[string]interface{})["price"].(float64))
+		t.Logf("Best ask: %d", bestAsk)
+
+		// Submit crossing limit buy
+		t.Logf("Submitting limit BUY at %d (crosses best ask)", bestAsk)
+		result := env.submitOrder(t, token, "buy", "limit", bestAsk, 10)
+		trades := result["trades"].([]interface{})
+		t.Logf("Trades from limit buy: %d", len(trades))
+	}
+
+	// Final position check
+	account = env.getAccount(t, token)
+	positions = account["positions"].([]interface{})
+	newBalance := int64(account["balance"].(float64))
+	t.Logf("Final balance: %d ($%.2f)", newBalance, float64(newBalance)/100)
+	t.Logf("Balance change: %d ($%.2f)", newBalance-initialBalance, float64(newBalance-initialBalance)/100)
+
+	if len(positions) == 0 {
+		t.Fatal("Expected position after limit order fills")
+	}
+
+	pos := positions[0].(map[string]interface{})
+	qty := int64(pos["quantity"].(float64))
+	avgPrice := int64(pos["avg_price"].(float64))
+	t.Logf("Final position: qty=%d avgPrice=%d", qty, avgPrice)
+
+	if qty <= 0 {
+		t.Errorf("Expected positive position quantity, got %d", qty)
+	}
+}
+
+// TestE2E_MultipleTradesPositionAccumulation tests buy/buy/sell/sell pattern
+func TestE2E_MultipleTradesPositionAccumulation(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+
+	// Start market maker
+	env.mm.Start()
+	defer env.mm.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	token, _, _ := env.registerUser(t, "multitrader", "password123")
+
+	// Get initial state
+	account := env.getAccount(t, token)
+	initialBalance := int64(account["balance"].(float64))
+	t.Logf("Initial balance: $%.2f", float64(initialBalance)/100)
+
+	// BUY 1: 10 shares
+	t.Log("=== BUY 1: 10 shares ===")
+	result := env.submitOrder(t, token, "buy", "market", 0, 10)
+	trades := result["trades"].([]interface{})
+	if len(trades) == 0 {
+		t.Fatal("Buy 1 should execute")
+	}
+	buy1Price := int64(trades[0].(map[string]interface{})["price"].(float64))
+	t.Logf("Buy 1 executed at %d", buy1Price)
+
+	account = env.getAccount(t, token)
+	positions := account["positions"].([]interface{})
+	if len(positions) == 0 {
+		t.Fatal("Should have position after buy 1")
+	}
+	pos := positions[0].(map[string]interface{})
+	qty := int64(pos["quantity"].(float64))
+	avgPrice := int64(pos["avg_price"].(float64))
+	t.Logf("After buy 1: qty=%d avgPrice=%d", qty, avgPrice)
+	if qty != 10 {
+		t.Errorf("Expected qty=10, got %d", qty)
+	}
+
+	// BUY 2: 10 more shares
+	t.Log("=== BUY 2: 10 more shares ===")
+	result = env.submitOrder(t, token, "buy", "market", 0, 10)
+	trades = result["trades"].([]interface{})
+	if len(trades) == 0 {
+		t.Fatal("Buy 2 should execute")
+	}
+	buy2Price := int64(trades[0].(map[string]interface{})["price"].(float64))
+	t.Logf("Buy 2 executed at %d", buy2Price)
+
+	account = env.getAccount(t, token)
+	positions = account["positions"].([]interface{})
+	pos = positions[0].(map[string]interface{})
+	qty = int64(pos["quantity"].(float64))
+	avgPrice = int64(pos["avg_price"].(float64))
+	t.Logf("After buy 2: qty=%d avgPrice=%d", qty, avgPrice)
+	if qty != 20 {
+		t.Errorf("Expected qty=20, got %d", qty)
+	}
+
+	// SELL 1: 10 shares
+	t.Log("=== SELL 1: 10 shares ===")
+	result = env.submitOrder(t, token, "sell", "market", 0, 10)
+	trades = result["trades"].([]interface{})
+	if len(trades) == 0 {
+		t.Fatal("Sell 1 should execute")
+	}
+	sell1Price := int64(trades[0].(map[string]interface{})["price"].(float64))
+	t.Logf("Sell 1 executed at %d", sell1Price)
+
+	account = env.getAccount(t, token)
+	positions = account["positions"].([]interface{})
+	pos = positions[0].(map[string]interface{})
+	qty = int64(pos["quantity"].(float64))
+	realizedPnL := int64(pos["realized_pnl"].(float64))
+	t.Logf("After sell 1: qty=%d realizedPnL=%d", qty, realizedPnL)
+	if qty != 10 {
+		t.Errorf("Expected qty=10, got %d", qty)
+	}
+
+	// SELL 2: 10 more shares (close position)
+	t.Log("=== SELL 2: 10 more shares (close) ===")
+	result = env.submitOrder(t, token, "sell", "market", 0, 10)
+	trades = result["trades"].([]interface{})
+	if len(trades) == 0 {
+		t.Fatal("Sell 2 should execute")
+	}
+	sell2Price := int64(trades[0].(map[string]interface{})["price"].(float64))
+	t.Logf("Sell 2 executed at %d", sell2Price)
+
+	account = env.getAccount(t, token)
+	positions = account["positions"].([]interface{})
+	pos = positions[0].(map[string]interface{})
+	qty = int64(pos["quantity"].(float64))
+	realizedPnL = int64(pos["realized_pnl"].(float64))
+	finalBalance := int64(account["balance"].(float64))
+	t.Logf("After sell 2: qty=%d realizedPnL=%d balance=%d", qty, realizedPnL, finalBalance)
+
+	if qty != 0 {
+		t.Errorf("Expected flat position (qty=0), got %d", qty)
+	}
+
+	// Calculate expected P&L
+	// Bought 20 total, sold 20 total
+	// avgBuyPrice = (buy1Price + buy2Price) / 2 per share... actually it's weighted
+	// This is more complex - just verify balance change makes sense
+	balanceChange := finalBalance - initialBalance
+	t.Logf("Total balance change: %d ($%.2f)", balanceChange, float64(balanceChange)/100)
+
+	// With market maker spread, we should have a loss
+	if balanceChange >= 0 {
+		t.Logf("Warning: Expected loss due to spread, but got profit/break-even")
+	}
+
+	t.Logf("Trade prices: buy1=%d buy2=%d sell1=%d sell2=%d", buy1Price, buy2Price, sell1Price, sell2Price)
+}
+
+// TestE2E_RawAccountResponse tests exactly what the API returns
+func TestE2E_RawAccountResponse(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+
+	env.mm.Start()
+	defer env.mm.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	token, _, _ := env.registerUser(t, "rawtest", "password123")
+
+	// Buy some shares
+	env.submitOrder(t, token, "buy", "market", 0, 10)
+
+	// Get raw account response
+	resp, err := env.get("/api/account", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Read raw body
+	body := new(bytes.Buffer)
+	body.ReadFrom(resp.Body)
+	t.Logf("RAW /api/account response:\n%s", body.String())
 }
 
 // TestE2E_FullPositionLifecycle is a comprehensive test that traces through
