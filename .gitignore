@@ -5,6 +5,8 @@ bin/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 
 # Dependencies
 web/node_modules/
@@ -12,6 +14,9 @@ web/node_modules/
 # Build artifacts
 web/dist/
 dist/
+
+# Test artifacts
+web/test-results/
 
 # IDE
 .idea/
