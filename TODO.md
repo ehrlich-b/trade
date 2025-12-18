@@ -1,113 +1,232 @@
-# TODO
+# TODO - Arcade Mode Focus
 
-## Core UX - COMPLETE (2025-12-16)
+> **See [`mm_design.md`](mm_design.md)** for detailed market making design: redemption mechanism, bot ecosystem, fee structure, failure modes.
 
-All core issues are fixed. Full test coverage with Go unit tests and Playwright e2e tests.
+## The Game
 
-### Core Issues - ALL FIXED
+**Arcade Mode**: Fast-paced trading matches using real historical data, compressed into 10-30 minutes.
 
-#### 1. Open Orders Display - DONE
-- [x] Show user's pending orders in the book or separate panel
-- [x] Add cancel buttons next to each open order
-- [x] Added GET /api/orders endpoint to fetch user's open orders
-- [x] Created OpenOrders component in center panel
+### How It Works
+1. **Lobby spins** → picks random $SPY day from last 10 years
+2. **Price normalized** → scaled to recent closing price (can't tell which day)
+3. **Day compressed** → 6.5 market hours → 10/15/30 min match
+4. **20+ bots trade** → MMs, momentum, mean reversion, noise traders
+5. **Players compete** → real-time leaderboard, best P&L wins
+6. **Bell rings** → settlement, rankings, next match
 
-#### 2. Symbol Selector - DONE
-- [x] Add dropdown to select trading symbol (even with just "FAKE" for now)
-- [x] Header shows selected symbol prominently
-- [x] Ready for multi-symbol support
-
-#### 3. Position Display Not Working - FIXED
-- [x] Debug why positions show 0 after trades
-  - **BUG FOUND**: Only submitter positions updated, not counterparty!
-  - **FIXED in server.go**: Now updates BOTH buyer AND seller positions
-  - **FIXED in market/maker.go**: MM trades now notify server for counterparty updates
-- [x] Verify backend returns correct position data
-- [x] Cash/Position/Net Worth should now reflect reality
-
-#### 4. Input Validation - DONE
-- [x] Quantity must be > 0, integer - validated with inline error
-- [x] Price must be > 0 for limit orders - validated with inline error
-- [x] Show error messages inline, not alerts
-- [x] Added quick quantity buttons (10, 25, 50, 100)
-
-#### 5. UI Layout Overhaul - DONE
-- [x] Header now shows: Symbol Selector | Prices | Account Summary (Cash/Position/P&L/Net Worth) | Status/User
-- [x] Account summary always visible in header
-- [x] Order form is compact with quick quantity buttons
-- [x] Leaderboard/Trades as tabbed view (not both visible)
-- [x] Position details in center panel with grid layout
-- [x] Cleaner, more professional dark theme
-
-UI enhancements (completed):
-- [x] Add "Open Orders" panel showing pending orders with cancel buttons
-- [x] Highlight MY orders in the order book with different color (blue background + dot marker)
+### Why This Works
+- **Real dynamics**: Historical data has real volatility, trends, reversals
+- **Unpredictable**: Random day + normalization = can't metagame
+- **Fuzzy edge**: Even MMs get slightly fuzzed reference (no perfect arb)
+- **Fast iteration**: Play 4-6 matches per hour, learn quickly
+- **Always available**: 24/7, no market hours needed
 
 ---
 
-## Recently Fixed (2025-12-16)
-- [x] **Persistent sessions**: Sessions now stored in database, survive server restarts
-- [x] **401 error handling**: Frontend auto-logs out on expired/invalid tokens
-- [x] **Price input validation**: Rounds to 2 decimal places, prevents precision errors
-- [x] **Playwright e2e tests**: Comprehensive frontend tests covering OpenOrders, position details, P&L
-- [x] **Fixed market maker account errors**: Skip position tracking for market_maker user
-- [x] **Database cleanup on test runs**: Fresh DB for each test run
-- [x] Test commands: `make test` (Go unit tests), `make test-e2e` (Playwright browser tests)
+## Match Structure
 
-## Previously Fixed (2025-12-15)
-- [x] **Critical position tracking bug**: Both buyer AND seller positions now update on trades
-- [x] **Market maker callback**: MM trades now notify server for counterparty position updates
-- [x] Database migration system added
-- [x] Order cancel authorization (only owner can cancel)
-- [x] Rate limiting (100 req/min/IP)
-- [x] CORS configurable via -cors flag
-- [x] Graceful shutdown with signal handling
-- [x] Session expiration enforcement
-- [x] Market maker position/P&L tracking
-- [x] Self-trade prevention
-- [x] WebSocket dead connection pruning
-- [x] Store/market package test coverage
-- [x] Error boundary for React
-- [x] Loading state for order submission
+```
+LOBBY      - Spinning to select historical day
+           - Players join, see countdown to start
 
----
+MATCH START - Bell rings
+            - "Trading Day: ???" (day hidden)
+            - Everyone at $1M, clock starts
 
-## Backlog (After Core UX Fixed)
+TRADING    - 10/15/30 min depending on match type
+            - 1 real second ≈ 13-39 market seconds
+            - Bots active, prices moving
+            - Real-time leaderboard updating
 
-### Real Data Integration
-- [ ] Polygon.io free tier integration
-- [ ] Alpaca API integration
-- [ ] 15-min delayed feed for market makers
-- [ ] Real-time feed tier for players
+WARNING    - "90 SECONDS" / "FINAL 30" alerts
+            - Urgency intensifies
 
-### Enhanced Features
-- [ ] Multiple stocks (after symbol selector works)
-- [ ] Stop orders
-- [ ] IOC/FOK order types
-- [ ] Trade history charts (lightweight-charts)
-- [ ] Bot API for player algorithms
-- [ ] Keyboard shortcuts (Enter to submit, Esc to cancel)
-- [ ] Quick quantity buttons (10, 25, 50, 100, MAX)
+SETTLEMENT - Bell rings, trading halts
+            - Positions marked to final price
+            - P&L calculated, rankings shown
 
-### Infrastructure
-- [ ] Basic monitoring/logging
-- [ ] Performance metrics
+NEXT MATCH - Brief intermission, then new day spins
+```
 
 ---
 
-## Design Principles (Reminder)
+## Phase 1: Core Systems (BUILD THIS)
 
-1. **Trading Terminal First** - This should feel like a Bloomberg terminal, not a web form
-2. **Information Density** - Traders want to see everything at once
-3. **Keyboard Friendly** - Power users hate clicking
-4. **Real-time Feedback** - Every action should have immediate visual feedback
-5. **Position Awareness** - User should ALWAYS know their position and P&L
+### 1.1 Historical Data Pipeline
+- [ ] Polygon.io integration (one call per match)
+- [ ] Fetch random $SPY day (last 10 years)
+- [ ] Normalize prices to recent close (hide which day)
+- [ ] Store/cache fetched days locally
+- [ ] Time scaling: map real seconds → market time
+
+### 1.2 Match Engine
+- [ ] Match state machine (LOBBY → TRADING → SETTLEMENT)
+- [ ] Configurable duration (10/15/30 min)
+- [ ] Clock + time acceleration
+- [ ] Trading halt at match end
+- [ ] Settlement calculation
+- [ ] WebSocket broadcast of match state
+
+### 1.3 Price Feed System
+- [ ] "True price" from historical data (normalized)
+- [ ] MM reference price (slightly fuzzed from true)
+- [ ] Player-visible mid price (from order book)
+- [ ] Price ticks at accelerated rate
+
+### 1.4 Bot Ecosystem (20+ bots)
+
+**Market Makers (4 bots)** - liquidity providers, exploitable:
+- [ ] Tight MM: 5¢ spread, size 20, fast quotes
+- [ ] Wide MM: 30¢ spread, size 200, slow quotes
+- [ ] Adaptive MM: spread widens with volatility/inventory
+- [ ] Nervous MM: pulls quotes on big moves, slow to return
+
+MM Behavior:
+- [ ] Quote around fuzzed reference price
+- [ ] Inventory skew (long → lower quotes, short → higher)
+- [ ] Adverse selection tracking (widen after being picked off)
+- [ ] Position limits (stop quoting one side at max)
+
+**Directional Traders (8 bots)** - create price movement:
+- [ ] Momentum Fast (×2): chases 10-second trends
+- [ ] Momentum Slow (×2): chases 1-minute trends
+- [ ] Mean Reversion (×2): fades 20¢+ moves
+- [ ] Breakout (×2): jumps on range breaks
+
+**Noise Traders (8 bots)** - chaos and volume:
+- [ ] Random (×4): random market orders, small size
+- [ ] Panic (×2): overreacts to price moves
+- [ ] Slow (×2): random but infrequent, larger size
+
+### 1.5 Match UI
+- [ ] **BIG TIMER** - center screen, countdown
+- [ ] **Match type badge** - "10 MIN MATCH"
+- [ ] **Live leaderboard** - P&L rankings updating
+- [ ] **Trade tape** - all trades, all participants
+- [ ] **Price display** - current mid, high/low of session
+- [ ] **"FINAL 30"** - dramatic countdown mode
+- [ ] **Settlement screen** - your rank, P&L, stats
+- [ ] **Bell sounds** - start/end audio
 
 ---
 
-## Open Questions
+## Phase 2: Competition
 
-- Bankruptcy penalty: lockout duration? shame board?
-- Market maker personality variations?
-- Overnight position rules?
-- Position limits needed?
+### 2.1 Leaderboards
+- [ ] In-match live rankings
+- [ ] Match history (your results)
+- [ ] All-time stats (matches played, win rate, avg P&L)
+- [ ] Streak tracking
+
+### 2.2 Match Lobby
+- [ ] See upcoming match countdown
+- [ ] Join queue for next match
+- [ ] Match type selection (10/15/30 min)
+
+---
+
+## Phase 3: Polish
+
+- [ ] Keyboard shortcuts
+- [ ] Sound effects (trades, alerts, bells)
+- [ ] Mini price chart
+- [ ] Mobile responsive
+- [ ] Multiple symbols (beyond $SPY)
+
+---
+
+## Technical Notes
+
+### Polygon API Usage
+```
+GET /v2/aggs/ticker/SPY/range/1/minute/{date}/{date}
+- Returns ~390 minute bars per day
+- One API call per match
+- Free tier: 5 calls/min (enough for lobby spinning)
+- Cache fetched days locally
+```
+
+### Price Normalization
+```go
+// Example: Historical day had SPY at $380, current close is $480
+scaleFactor := currentClose / historicalOpen
+normalizedPrice := historicalPrice * scaleFactor
+// Now all prices are in current-ish range
+```
+
+### Time Acceleration
+```
+10 min match: 1 real sec = 39 market sec (390 min / 10 min)
+15 min match: 1 real sec = 26 market sec
+30 min match: 1 real sec = 13 market sec
+```
+
+### MM Fuzzing
+```go
+// MMs don't see exact true price
+mmReference := truePrice + randomNoise(-0.10, +0.10)
+// Prevents perfect arbitrage, creates edge for observant players
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    MATCH ENGINE                      │
+│  ┌─────────┐  ┌──────────┐  ┌─────────────────────┐ │
+│  │ Polygon │→ │Historical│→ │   Time Scaler       │ │
+│  │   API   │  │  Cache   │  │ (real → market time)│ │
+│  └─────────┘  └──────────┘  └──────────┬──────────┘ │
+│                                        │            │
+│                              ┌─────────▼─────────┐  │
+│                              │   True Price      │  │
+│                              │   (normalized)    │  │
+│                              └─────────┬─────────┘  │
+│                    ┌───────────────────┼───────────┐│
+│              ┌─────▼─────┐       ┌─────▼─────┐     ││
+│              │ MM Fuzzed │       │ Bot Feed  │     ││
+│              │ Reference │       │ (exact)   │     ││
+│              └─────┬─────┘       └─────┬─────┘     ││
+│                    │                   │           ││
+│              ┌─────▼─────┐       ┌─────▼─────┐     ││
+│              │    MMs    │       │   Bots    │     ││
+│              │  (4 bots) │       │ (16 bots) │     ││
+│              └─────┬─────┘       └─────┬─────┘     ││
+│                    │                   │           ││
+│                    └─────────┬─────────┘           ││
+│                              │                     ││
+│                    ┌─────────▼─────────┐           ││
+│                    │    ORDER BOOK     │←── Players││
+│                    │    (existing)     │           ││
+│                    └─────────┬─────────┘           ││
+│                              │                     ││
+│                    ┌─────────▼─────────┐           ││
+│                    │    WebSocket      │           ││
+│                    │    Broadcast      │           ││
+│                    └───────────────────┘           ││
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## What We're NOT Building (Yet)
+
+- Live mode (real-time market data)
+- Multiple stocks
+- Options
+- Fancy charts
+- Mobile app
+- Player bot API
+
+---
+
+## Success Criteria
+
+**Is it fun to play a 10-minute match against 20 bots?**
+
+- Does the market feel alive?
+- Can skilled players consistently beat bots?
+- Is there tension as the clock runs down?
+- Do you want to play "just one more match"?
