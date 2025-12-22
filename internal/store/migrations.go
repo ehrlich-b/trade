@@ -95,6 +95,55 @@ var migrations = []Migration{
 		CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 		`,
 	},
+	{
+		Version:     4,
+		Description: "Match history and user stats",
+		SQL: `
+		CREATE TABLE IF NOT EXISTS matches (
+			id TEXT PRIMARY KEY,
+			symbol TEXT NOT NULL,
+			duration_minutes INTEGER NOT NULL,
+			target_nav INTEGER NOT NULL,
+			final_nav INTEGER NOT NULL,
+			participant_count INTEGER NOT NULL,
+			started_at DATETIME NOT NULL,
+			ended_at DATETIME NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS match_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			match_id TEXT NOT NULL REFERENCES matches(id),
+			user_id TEXT NOT NULL REFERENCES users(id),
+			starting_value INTEGER NOT NULL,
+			final_value INTEGER NOT NULL,
+			pnl INTEGER NOT NULL,
+			rank INTEGER NOT NULL,
+			starting_shares INTEGER NOT NULL,
+			final_shares INTEGER NOT NULL,
+			starting_cash INTEGER NOT NULL,
+			final_cash INTEGER NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(match_id, user_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS user_stats (
+			user_id TEXT PRIMARY KEY REFERENCES users(id),
+			matches_played INTEGER NOT NULL DEFAULT 0,
+			matches_won INTEGER NOT NULL DEFAULT 0,
+			total_pnl INTEGER NOT NULL DEFAULT 0,
+			best_pnl INTEGER NOT NULL DEFAULT 0,
+			worst_pnl INTEGER NOT NULL DEFAULT 0,
+			current_streak INTEGER NOT NULL DEFAULT 0,
+			best_streak INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_matches_ended ON matches(ended_at);
+		CREATE INDEX IF NOT EXISTS idx_match_results_user ON match_results(user_id);
+		CREATE INDEX IF NOT EXISTS idx_match_results_match ON match_results(match_id);
+		`,
+	},
 }
 
 // initMigrationsTable creates the migrations tracking table

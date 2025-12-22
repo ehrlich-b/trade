@@ -323,3 +323,52 @@ func TestSelfTradePreventionWithOtherOrders(t *testing.T) {
 		t.Errorf("expected 1 ask remaining (user1's), got %d", len(snap.Asks))
 	}
 }
+
+// TestSellMatchesAgainstHighBid tests the scenario where a user places a buy order
+// above market price, then a new sell order comes in and matches against it
+func TestSellMatchesAgainstHighBid(t *testing.T) {
+	book := New("FAKE")
+
+	// User places a high buy order (no asks to match)
+	buy := &Order{ID: "buy1", UserID: "buyer", Side: Buy, Type: Limit, Price: 10000, Quantity: 10}
+	trades, _ := book.Submit(buy)
+
+	// No trades yet (no asks)
+	if len(trades) != 0 {
+		t.Fatalf("expected 0 trades, got %d", len(trades))
+	}
+
+	// Verify bid is in book
+	snap := book.Snapshot()
+	if len(snap.Bids) != 1 || snap.Bids[0].Price != 10000 {
+		t.Fatalf("expected bid at 10000 in book")
+	}
+
+	// Now a seller comes in with an ask below the bid price
+	sell := &Order{ID: "sell1", UserID: "seller", Side: Sell, Type: Limit, Price: 9500, Quantity: 10}
+	trades, _ = book.Submit(sell)
+
+	// Should match! The sell at 9500 matches the bid at 10000
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 trade when sell comes in below existing bid, got %d", len(trades))
+	}
+
+	if trades[0].Price != 10000 {
+		t.Errorf("expected trade at resting order price 10000, got %d", trades[0].Price)
+	}
+	if trades[0].Quantity != 10 {
+		t.Errorf("expected trade quantity 10, got %d", trades[0].Quantity)
+	}
+	if trades[0].BuyerID != "buyer" {
+		t.Errorf("expected buyer to be 'buyer', got %s", trades[0].BuyerID)
+	}
+	if trades[0].SellerID != "seller" {
+		t.Errorf("expected seller to be 'seller', got %s", trades[0].SellerID)
+	}
+
+	// Book should be empty now
+	snap = book.Snapshot()
+	if len(snap.Bids) != 0 || len(snap.Asks) != 0 {
+		t.Errorf("expected empty book after match, got %d bids and %d asks", len(snap.Bids), len(snap.Asks))
+	}
+}

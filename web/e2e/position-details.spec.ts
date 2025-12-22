@@ -1,5 +1,24 @@
 import { test, expect } from '@playwright/test'
 
+// Helper to wait for order book to have liquidity (bots quoting)
+// Global setup already ensures liquidity exists, so this just verifies it's still there
+async function waitForLiquidity(page: import('@playwright/test').Page) {
+  // Short wait for WebSocket to receive order book and for bots to re-quote
+  // Bots requote every 500ms-2s depending on type
+  let attempts = 0
+  const maxAttempts = 20 // 10 seconds max (should be fast since global setup already waited)
+  while (attempts < maxAttempts) {
+    const bodyText = await page.evaluate(() => document.body.innerText)
+    const match = bodyText.match(/Spread:\s*\$(\d+\.\d+)/)
+    if (match && parseFloat(match[1]) > 0) {
+      return // Found liquidity!
+    }
+    await page.waitForTimeout(500)
+    attempts++
+  }
+  throw new Error('Timed out waiting for liquidity (bots may need to re-quote)')
+}
+
 test.describe('Position Details', () => {
   test('position quantity updates correctly after buy', async ({ page }) => {
     await page.goto('/')
@@ -11,6 +30,9 @@ test.describe('Position Details', () => {
     await page.fill('input[placeholder="Enter password"]', 'testpass123')
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
+
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
 
     // Check initial position is 0
     const positionPanel = page.locator('text=POSITION DETAILS').locator('..')
@@ -45,6 +67,9 @@ test.describe('Position Details', () => {
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
 
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
+
     const positionPanel = page.locator('text=POSITION DETAILS').locator('..')
     const qtyElement = positionPanel.locator('text=Quantity').locator('..').locator('span').last()
 
@@ -69,6 +94,9 @@ test.describe('Position Details', () => {
     await page.fill('input[placeholder="Enter password"]', 'testpass123')
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
+
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
 
     const positionPanel = page.locator('text=POSITION DETAILS').locator('..')
     const qtyElement = positionPanel.locator('text=Quantity').locator('..').locator('span').last()
@@ -109,6 +137,9 @@ test.describe('Position Details', () => {
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
 
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
+
     // Get initial cash from header
     const cashElement = page.locator('text=CASH').locator('..').locator('span').last()
     const initialCash = await cashElement.textContent()
@@ -136,6 +167,9 @@ test.describe('Position Details', () => {
     await page.fill('input[placeholder="Enter password"]', 'testpass123')
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
+
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
 
     // Buy shares
     await page.click('button:has-text("BUY")')

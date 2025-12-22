@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { BookSnapshot, Trade, Position, Order, WSMessage } from './types'
+import { BookSnapshot, Trade, Position, Order, BarData } from './types'
 import OrderBook from './components/OrderBook'
 import OrderForm from './components/OrderForm'
 import TradeList from './components/TradeList'
 import AuthForm from './components/AuthForm'
 import Leaderboard from './components/Leaderboard'
 import OpenOrders from './components/OpenOrders'
+import CandlestickChart from './components/CandlestickChart'
 
 interface AuthState {
   token: string
@@ -14,7 +15,7 @@ interface AuthState {
   username: string
 }
 
-const SYMBOLS = ['FAKE'] // Add more when multi-symbol is ready
+const SYMBOLS = ['SPY'] // Arcade mode uses SPY
 
 function getStoredAuth(): AuthState | null {
   const stored = localStorage.getItem('auth')
@@ -41,7 +42,7 @@ function formatMoney(cents: number): string {
 
 function App() {
   const [auth, setAuth] = useState<AuthState | null>(getStoredAuth)
-  const [symbol, setSymbol] = useState('FAKE')
+  const [symbol, setSymbol] = useState('SPY')
   const [book, setBook] = useState<BookSnapshot | null>(null)
   const [trades, setTrades] = useState<Trade[]>([])
   const [position, setPosition] = useState<Position>({ quantity: 0, avgPrice: 0, pnl: 0 })
@@ -51,6 +52,9 @@ function App() {
   const [showLeaderboard, setShowLeaderboard] = useState(false)
   const [openOrders, setOpenOrders] = useState<Order[]>([])
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({})
+  const [bars, setBars] = useState<BarData[]>([])
+  const [currentBar, setCurrentBar] = useState(0)
+  const [marketTime, setMarketTime] = useState('9:30 AM')
   const wsRef = useRef<WebSocket | null>(null)
 
   // Use ref for auth to avoid stale closures in callbacks
@@ -87,7 +91,7 @@ function App() {
       if (resp.ok) {
         const data = await resp.json()
         setBalance(data.balance || 100000000)
-        const pos = data.positions?.find((p: { symbol: string }) => p.symbol === 'FAKE')
+        const pos = data.positions?.find((p: { symbol: string }) => p.symbol === 'SPY')
         if (pos) {
           setPosition({
             quantity: pos.quantity,
@@ -169,7 +173,7 @@ function App() {
     }
 
     ws.onmessage = (event) => {
-      const msg: WSMessage = JSON.parse(event.data)
+      const msg = JSON.parse(event.data)
       if (msg.type === 'book') {
         setBook(msg.book)
       } else if (msg.type === 'trade') {
@@ -179,6 +183,17 @@ function App() {
         if (currentAuth && (msg.trade.buyer_id === currentAuth.userId || msg.trade.seller_id === currentAuth.userId)) {
           fetchAccount()
           fetchOrders()
+        }
+      } else if (msg.type === 'match_state') {
+        // Update bars and market time from match state
+        if (msg.bars && Array.isArray(msg.bars)) {
+          setBars(msg.bars)
+        }
+        if (typeof msg.current_bar === 'number') {
+          setCurrentBar(msg.current_bar)
+        }
+        if (msg.market_time) {
+          setMarketTime(msg.market_time)
         }
       }
     }
@@ -268,6 +283,10 @@ function App() {
           </select>
           <div style={styles.priceGroup}>
             <div style={styles.priceItem}>
+              <span style={styles.priceLabel}>MARKET TIME</span>
+              <span style={styles.priceValue}>{marketTime}</span>
+            </div>
+            <div style={styles.priceItem}>
               <span style={styles.priceLabel}>LAST</span>
               <span style={styles.priceValue}>
                 {lastPrice !== null ? `$${(lastPrice / 100).toFixed(2)}` : '—'}
@@ -336,13 +355,18 @@ function App() {
           <OrderBook book={book} userOrders={openOrders} />
         </div>
 
-        {/* Center: Order Form + Open Orders + Position Details */}
+        {/* Center: Chart + Order Form + Open Orders + Position Details */}
         <div style={styles.centerPanel}>
-          <div style={styles.panel}>
-            <OrderForm onSubmit={submitOrder} midPrice={midPrice} submitting={submitting} />
+          <div style={styles.chartPanel}>
+            <CandlestickChart bars={bars} currentBar={currentBar} />
           </div>
-          <div style={styles.panel}>
-            <OpenOrders orders={openOrders} onCancel={cancelOrder} cancelling={cancelling} />
+          <div style={styles.orderRow}>
+            <div style={styles.panel}>
+              <OrderForm onSubmit={submitOrder} midPrice={midPrice} submitting={submitting} />
+            </div>
+            <div style={styles.panel}>
+              <OpenOrders orders={openOrders} onCancel={cancelOrder} cancelling={cancelling} />
+            </div>
           </div>
           <div style={styles.panel}>
             <h3 style={styles.panelTitle}>POSITION DETAILS</h3>
@@ -532,6 +556,19 @@ const styles: Record<string, React.CSSProperties> = {
   centerPanel: {
     display: 'flex',
     flexDirection: 'column',
+    gap: '12px',
+  },
+  chartPanel: {
+    background: '#111',
+    borderRadius: '6px',
+    border: '1px solid #222',
+    overflow: 'hidden',
+    flex: 1,
+    minHeight: '320px',
+  },
+  orderRow: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
     gap: '12px',
   },
   panelTitle: {

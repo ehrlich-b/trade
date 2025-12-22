@@ -27,6 +27,9 @@ func (pl *PriceLevel) TotalQuantity() int64 {
 	return total
 }
 
+// TradeCallback is called when trades occur
+type TradeCallback func(Trade)
+
 // OrderBook is an in-memory order book for a single symbol
 type OrderBook struct {
 	Symbol string
@@ -37,6 +40,10 @@ type OrderBook struct {
 	orders map[string]*Order
 
 	trades []Trade
+
+	// Trade callback (called outside lock after trades occur)
+	tradeCallbacks []TradeCallback
+	callbackMu     sync.RWMutex
 }
 
 func New(symbol string) *OrderBook {
@@ -49,10 +56,30 @@ func New(symbol string) *OrderBook {
 	}
 }
 
+// OnTrade registers a callback to be notified when trades occur
+func (ob *OrderBook) OnTrade(callback TradeCallback) {
+	ob.callbackMu.Lock()
+	defer ob.callbackMu.Unlock()
+	ob.tradeCallbacks = append(ob.tradeCallbacks, callback)
+}
+
+// notifyTrades calls all trade callbacks (called outside main lock)
+func (ob *OrderBook) notifyTrades(trades []Trade) {
+	ob.callbackMu.RLock()
+	callbacks := make([]TradeCallback, len(ob.tradeCallbacks))
+	copy(callbacks, ob.tradeCallbacks)
+	ob.callbackMu.RUnlock()
+
+	for _, trade := range trades {
+		for _, callback := range callbacks {
+			callback(trade)
+		}
+	}
+}
+
 // Submit places an order and returns any resulting trades
 func (ob *OrderBook) Submit(order *Order) ([]Trade, error) {
 	ob.mu.Lock()
-	defer ob.mu.Unlock()
 
 	if order.ID == "" {
 		order.ID = uuid.New().String()
@@ -73,6 +100,13 @@ func (ob *OrderBook) Submit(order *Order) ([]Trade, error) {
 	// If limit order has remaining quantity, add to book
 	if order.Type == Limit && !order.IsFilled() {
 		ob.addToBook(order)
+	}
+
+	ob.mu.Unlock()
+
+	// Notify callbacks after releasing lock (avoids deadlock)
+	if len(trades) > 0 {
+		ob.notifyTrades(trades)
 	}
 
 	return trades, nil

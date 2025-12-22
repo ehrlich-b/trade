@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"io/fs"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -237,45 +236,11 @@ func (s *Server) submitOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update position tracking for BOTH sides of each trade
-	// This is critical - without this, counterparty positions don't update!
-	if s.store != nil {
-		for _, trade := range trades {
-			log.Printf("[POSITION] Trade: buyer=%s seller=%s price=%d qty=%d symbol=%s",
-				trade.BuyerID, trade.SellerID, trade.Price, trade.Quantity, trade.Symbol)
-			// Update buyer's position (skip market maker - it has no real account)
-			if trade.BuyerID != "" && trade.BuyerID != "market_maker" {
-				buyerAccount, err := s.store.GetAccountByUserID(trade.BuyerID)
-				if err == nil {
-					log.Printf("[POSITION] Updating buyer %s (account %s)", trade.BuyerID, buyerAccount.ID)
-					s.store.UpdatePositionOnTrade(buyerAccount.ID, trade.Symbol, "buy", trade.Price, trade.Quantity)
-				} else {
-					log.Printf("[POSITION] ERROR getting buyer account: %v", err)
-				}
-			}
-			// Update seller's position (skip market maker - it has no real account)
-			if trade.SellerID != "" && trade.SellerID != "market_maker" {
-				sellerAccount, err := s.store.GetAccountByUserID(trade.SellerID)
-				if err == nil {
-					log.Printf("[POSITION] Updating seller %s (account %s)", trade.SellerID, sellerAccount.ID)
-					s.store.UpdatePositionOnTrade(sellerAccount.ID, trade.Symbol, "sell", trade.Price, trade.Quantity)
-				} else {
-					log.Printf("[POSITION] ERROR getting seller account: %v", err)
-				}
-			}
-		}
-	}
+	// Trade broadcasts, position updates, and callbacks are now handled
+	// by the order book's OnTrade callback, which calls server.HandleTrade
 
-	// Broadcast updates
+	// Broadcast book update (order book state change)
 	s.broadcastBookUpdate()
-	for _, trade := range trades {
-		s.hub.Broadcast(map[string]interface{}{
-			"type":  "trade",
-			"trade": trade,
-		})
-		// Notify trade callbacks (e.g., market maker position tracking)
-		s.notifyTradeCallbacks(trade)
-	}
 
 	resp := OrderResponse{
 		OrderID: order.ID,
@@ -447,4 +412,31 @@ func (s *Server) Shutdown() {
 	s.sessions.Stop()
 	s.rateLimiter.Stop()
 	s.hub.Stop()
+}
+
+// MatchStateData contains data for broadcasting match state
+type MatchStateData struct {
+	State        string      `json:"state"`
+	Remaining    int         `json:"remaining"`
+	MarketTime   string      `json:"market_time"`
+	Progress     float64     `json:"progress"`
+	NAV          int64       `json:"nav"`
+	Participants interface{} `json:"participants"`
+	Bars         interface{} `json:"bars,omitempty"` // Price history bars
+	CurrentBar   int         `json:"current_bar"`    // Current bar index
+}
+
+// BroadcastMatchStateData sends match state to all connected clients
+func (s *Server) BroadcastMatchStateData(data MatchStateData) {
+	s.hub.Broadcast(map[string]interface{}{
+		"type":         "match_state",
+		"state":        data.State,
+		"remaining":    data.Remaining,
+		"market_time":  data.MarketTime,
+		"progress":     data.Progress,
+		"nav":          data.NAV,
+		"participants": data.Participants,
+		"bars":         data.Bars,
+		"current_bar":  data.CurrentBar,
+	})
 }

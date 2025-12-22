@@ -1,5 +1,24 @@
 import { test, expect } from '@playwright/test'
 
+// Helper to wait for order book to have liquidity (bots quoting)
+// Global setup already ensures liquidity exists, so this just verifies it's still there
+async function waitForLiquidity(page: import('@playwright/test').Page) {
+  // Short wait for WebSocket to receive order book and for bots to re-quote
+  // Bots requote every 500ms-2s depending on type
+  let attempts = 0
+  const maxAttempts = 20 // 10 seconds max (should be fast since global setup already waited)
+  while (attempts < maxAttempts) {
+    const bodyText = await page.evaluate(() => document.body.innerText)
+    const match = bodyText.match(/Spread:\s*\$(\d+\.\d+)/)
+    if (match && parseFloat(match[1]) > 0) {
+      return // Found liquidity!
+    }
+    await page.waitForTimeout(500)
+    attempts++
+  }
+  throw new Error('Timed out waiting for liquidity (bots may need to re-quote)')
+}
+
 test.describe('Open Orders', () => {
   test('limit order that fills immediately does not hang', async ({ page }) => {
     await page.goto('/')
@@ -11,6 +30,9 @@ test.describe('Open Orders', () => {
     await page.fill('input[placeholder="Enter password"]', 'testpass123')
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
+
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
 
     // Get the current mid price from the header
     const midPriceText = await page.locator('text=MID').locator('..').locator('span').last().textContent()
@@ -99,9 +121,10 @@ test.describe('Open Orders', () => {
     await page.click('button[type="submit"]')
     await page.waitForTimeout(300)
 
-    // Place second limit SELL order
+    // Place second limit SELL order (price ABOVE market so it won't fill immediately)
+    // Market is around $480, so $550 should stay open
     await page.click('button:has-text("SELL")')
-    await page.locator('input[type="number"][step="0.01"]').fill('150.00')
+    await page.locator('input[type="number"][step="0.01"]').fill('550.00')
     await page.locator('input[type="number"][step="1"]').fill('15')
     await page.click('button[type="submit"]')
     await page.waitForTimeout(300)
@@ -111,7 +134,7 @@ test.describe('Open Orders', () => {
     await expect(openOrdersPanel.locator('text=BUY')).toBeVisible()
     await expect(openOrdersPanel.locator('text=SELL')).toBeVisible()
     await expect(openOrdersPanel.locator('text=$45.00')).toBeVisible()
-    await expect(openOrdersPanel.locator('text=$150.00')).toBeVisible()
+    await expect(openOrdersPanel.locator('text=$550.00')).toBeVisible()
   })
 
   test('market orders do not appear in open orders (they fill immediately)', async ({ page }) => {
@@ -124,6 +147,9 @@ test.describe('Open Orders', () => {
     await page.fill('input[placeholder="Enter password"]', 'testpass123')
     await page.click('button[type="submit"]:has-text("Create Account")')
     await page.waitForSelector('text=PLACE ORDER', { timeout: 5000 })
+
+    // Wait for bots to provide liquidity
+    await waitForLiquidity(page)
 
     // Place a market BUY order
     await page.click('button:has-text("BUY")')

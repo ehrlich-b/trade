@@ -50,78 +50,86 @@ NEXT MATCH - Brief intermission, then new day spins
 
 ---
 
-## Phase 1: Core Systems (BUILD THIS)
+## Phase 1: Core Systems ✅ COMPLETE
 
-### 1.1 Historical Data Pipeline
-- [ ] Polygon.io integration (one call per match)
-- [ ] Fetch random $SPY day (last 10 years)
-- [ ] Normalize prices to recent close (hide which day)
-- [ ] Store/cache fetched days locally
-- [ ] Time scaling: map real seconds → market time
+### 1.1 Historical Data Pipeline ✅
+- [x] Polygon.io integration (one call per match)
+- [x] Fetch random $SPY day (last 10 years)
+- [x] Normalize prices to recent close (hide which day)
+- [x] Store/cache fetched days locally
+- [x] Time scaling: map real seconds → market time
 
-### 1.2 Match Engine
-- [ ] Match state machine (LOBBY → TRADING → SETTLEMENT)
-- [ ] Configurable duration (10/15/30 min)
-- [ ] Clock + time acceleration
-- [ ] Trading halt at match end
-- [ ] Settlement calculation
-- [ ] WebSocket broadcast of match state
+### 1.2 Match Engine ✅
+- [x] Match state machine (LOBBY → TRADING → SETTLEMENT)
+- [x] Configurable duration (10/15/30 min)
+- [x] Clock + time acceleration
+- [x] Trading halt at match end
+- [x] Settlement calculation
+- [x] WebSocket broadcast of match state
 
-### 1.3 Price Feed System
-- [ ] "True price" from historical data (normalized)
-- [ ] MM reference price (slightly fuzzed from true)
-- [ ] Player-visible mid price (from order book)
-- [ ] Price ticks at accelerated rate
+### 1.3 Price Feed System ✅
+- [x] "True price" from historical data (normalized)
+- [x] MM reference price (slightly fuzzed from true)
+- [x] Player-visible mid price (from order book)
+- [x] Price ticks at accelerated rate
 
-### 1.4 Bot Ecosystem (20+ bots)
+### 1.4 Bot Ecosystem (24 bots) ✅
 
 **Market Makers (4 bots)** - liquidity providers, exploitable:
-- [ ] Tight MM: 5¢ spread, size 20, fast quotes
-- [ ] Wide MM: 30¢ spread, size 200, slow quotes
-- [ ] Adaptive MM: spread widens with volatility/inventory
-- [ ] Nervous MM: pulls quotes on big moves, slow to return
+- [x] Tight MM: 5¢ spread, size 20, fast quotes
+- [x] Wide MM: 25¢ spread, size 200, slow quotes
+- [x] Adaptive MM: spread widens with volatility/inventory
+- [x] Nervous MM: pulls quotes on big moves, slow to return
 
 MM Behavior:
-- [ ] Quote around fuzzed reference price
-- [ ] Inventory skew (long → lower quotes, short → higher)
-- [ ] Adverse selection tracking (widen after being picked off)
-- [ ] Position limits (stop quoting one side at max)
+- [x] Quote around fuzzed reference price
+- [x] Inventory skew (long → lower quotes, short → higher)
+- [x] Position limits (stop quoting one side at max)
 
 **Directional Traders (8 bots)** - create price movement:
-- [ ] Momentum Fast (×2): chases 10-second trends
-- [ ] Momentum Slow (×2): chases 1-minute trends
-- [ ] Mean Reversion (×2): fades 20¢+ moves
-- [ ] Breakout (×2): jumps on range breaks
+- [x] Momentum Fast (×2): chases 10-second trends
+- [x] Momentum Slow (×2): chases 1-minute trends
+- [x] Mean Reversion (×2): fades 20¢+ moves
+- [x] Breakout (×2): jumps on range breaks
 
 **Noise Traders (8 bots)** - chaos and volume:
-- [ ] Random (×4): random market orders, small size
-- [ ] Panic (×2): overreacts to price moves
-- [ ] Slow (×2): random but infrequent, larger size
+- [x] Random Small (×4): random market orders, small size
+- [x] Random Large (×2): infrequent, larger size
+- [x] Panic (×2): overreacts to price moves
 
-### 1.5 Match UI
-- [ ] **BIG TIMER** - center screen, countdown
-- [ ] **Match type badge** - "10 MIN MATCH"
-- [ ] **Live leaderboard** - P&L rankings updating
-- [ ] **Trade tape** - all trades, all participants
-- [ ] **Price display** - current mid, high/low of session
-- [ ] **"FINAL 30"** - dramatic countdown mode
-- [ ] **Settlement screen** - your rank, P&L, stats
-- [ ] **Bell sounds** - start/end audio
+**Mandated Agents (4 bots)** - create natural flow:
+- [x] TWAP Buyer/Seller: steady execution over time
+- [x] Opportunistic Buyer: waits for good prices
+- [x] Desperate Seller: urgent execution
+
+### 1.5 Match UI ✅
+- [x] **BIG TIMER** - center screen, countdown
+- [x] **Match type badge** - "10 MIN MATCH"
+- [x] **Live leaderboard** - P&L rankings updating
+- [x] **"FINAL 30"** - dramatic countdown mode
+- [x] **Settlement screen** - your rank, P&L, stats
+- [x] **Lobby screen** - join matches, see participants
+- [ ] **Bell sounds** - start/end audio (future)
 
 ---
 
-## Phase 2: Competition
+## Phase 2: Competition (IN PROGRESS)
 
 ### 2.1 Leaderboards
-- [ ] In-match live rankings
-- [ ] Match history (your results)
-- [ ] All-time stats (matches played, win rate, avg P&L)
-- [ ] Streak tracking
+- [x] In-match live rankings (MatchLeaderboard component)
+- [x] Match history (store.GetUserMatchHistory)
+- [x] All-time stats (matches played, win rate, avg P&L) - user_stats table
+- [x] Streak tracking (current_streak, best_streak in user_stats)
 
-### 2.2 Match Lobby
-- [ ] See upcoming match countdown
-- [ ] Join queue for next match
-- [ ] Match type selection (10/15/30 min)
+### 2.2 Match Scheduler ✅
+- [x] Automatic match rotation (game.Scheduler)
+- [x] Match persistence (store.SaveMatch)
+- [x] User stats updates on match end
+
+### 2.3 Match Lobby
+- [x] See upcoming match countdown (MatchLobby component)
+- [x] Join matches (scheduler.JoinMatch)
+- [ ] Match type selection (10/15/30 min) - UI pending
 
 ---
 

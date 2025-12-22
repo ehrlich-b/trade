@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func setupTestStore(t *testing.T) (*Store, func()) {
@@ -864,5 +866,293 @@ func TestMigrationVersionsAreSequential(t *testing.T) {
 		if m.Version != expectedVersion {
 			t.Errorf("migration %d has version %d, expected %d", i, m.Version, expectedVersion)
 		}
+	}
+}
+
+// ==================== MATCH HISTORY TESTS ====================
+
+func TestSaveMatch(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	user1, _ := store.CreateUser("alice", "pass")
+	user2, _ := store.CreateUser("bob", "pass")
+
+	match := MatchRecord{
+		ID:               "match_123",
+		Symbol:           "SPY",
+		DurationMinutes:  10,
+		TargetNAV:        48000,
+		FinalNAV:         48500,
+		ParticipantCount: 2,
+		StartedAt:        time.Now().Add(-10 * time.Minute),
+		EndedAt:          time.Now(),
+	}
+
+	results := []MatchResult{
+		{
+			MatchID:        "match_123",
+			UserID:         user1.ID,
+			StartingValue:  100000000,
+			FinalValue:     102000000,
+			PnL:            2000000, // +$20,000
+			Rank:           1,
+			StartingShares: 1000,
+			FinalShares:    500,
+			StartingCash:   52000000,
+			FinalCash:      78000000,
+		},
+		{
+			MatchID:        "match_123",
+			UserID:         user2.ID,
+			StartingValue:  100000000,
+			FinalValue:     99000000,
+			PnL:            -1000000, // -$10,000
+			Rank:           2,
+			StartingShares: 800,
+			FinalShares:    800,
+			StartingCash:   61600000,
+			FinalCash:      60600000,
+		},
+	}
+
+	err := store.SaveMatch(match, results)
+	if err != nil {
+		t.Fatalf("SaveMatch failed: %v", err)
+	}
+
+	// Verify match was saved
+	savedMatch, err := store.GetMatch("match_123")
+	if err != nil {
+		t.Fatalf("GetMatch failed: %v", err)
+	}
+	if savedMatch.Symbol != "SPY" {
+		t.Errorf("expected symbol SPY, got %s", savedMatch.Symbol)
+	}
+	if savedMatch.FinalNAV != 48500 {
+		t.Errorf("expected final NAV 48500, got %d", savedMatch.FinalNAV)
+	}
+
+	// Verify results were saved
+	savedResults, err := store.GetMatchResults("match_123")
+	if err != nil {
+		t.Fatalf("GetMatchResults failed: %v", err)
+	}
+	if len(savedResults) != 2 {
+		t.Errorf("expected 2 results, got %d", len(savedResults))
+	}
+	if savedResults[0].Rank != 1 {
+		t.Errorf("expected first result to be rank 1, got %d", savedResults[0].Rank)
+	}
+}
+
+func TestUserStats(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	user, _ := store.CreateUser("alice", "pass")
+
+	// Initially no stats
+	stats, err := store.GetUserStats(user.ID)
+	if err != nil {
+		t.Fatalf("GetUserStats failed: %v", err)
+	}
+	if stats.MatchesPlayed != 0 {
+		t.Errorf("expected 0 matches played, got %d", stats.MatchesPlayed)
+	}
+
+	// Win a match
+	match1 := MatchRecord{
+		ID:               "match_1",
+		Symbol:           "SPY",
+		DurationMinutes:  10,
+		TargetNAV:        48000,
+		FinalNAV:         48500,
+		ParticipantCount: 1,
+		StartedAt:        time.Now().Add(-10 * time.Minute),
+		EndedAt:          time.Now(),
+	}
+	results1 := []MatchResult{{
+		MatchID:       "match_1",
+		UserID:        user.ID,
+		StartingValue: 100000000,
+		FinalValue:    105000000,
+		PnL:           5000000,
+		Rank:          1,
+	}}
+	store.SaveMatch(match1, results1)
+
+	stats, _ = store.GetUserStats(user.ID)
+	if stats.MatchesPlayed != 1 {
+		t.Errorf("expected 1 match played, got %d", stats.MatchesPlayed)
+	}
+	if stats.MatchesWon != 1 {
+		t.Errorf("expected 1 match won, got %d", stats.MatchesWon)
+	}
+	if stats.CurrentStreak != 1 {
+		t.Errorf("expected current streak 1, got %d", stats.CurrentStreak)
+	}
+	if stats.TotalPnL != 5000000 {
+		t.Errorf("expected total P&L 5000000, got %d", stats.TotalPnL)
+	}
+
+	// Lose a match
+	match2 := MatchRecord{
+		ID:               "match_2",
+		Symbol:           "SPY",
+		DurationMinutes:  10,
+		TargetNAV:        48000,
+		FinalNAV:         47500,
+		ParticipantCount: 1,
+		StartedAt:        time.Now().Add(-10 * time.Minute),
+		EndedAt:          time.Now(),
+	}
+	results2 := []MatchResult{{
+		MatchID:       "match_2",
+		UserID:        user.ID,
+		StartingValue: 100000000,
+		FinalValue:    97000000,
+		PnL:           -3000000,
+		Rank:          2, // Not rank 1 = not a win
+	}}
+	store.SaveMatch(match2, results2)
+
+	stats, _ = store.GetUserStats(user.ID)
+	if stats.MatchesPlayed != 2 {
+		t.Errorf("expected 2 matches played, got %d", stats.MatchesPlayed)
+	}
+	if stats.MatchesWon != 1 {
+		t.Errorf("expected 1 match won, got %d", stats.MatchesWon)
+	}
+	if stats.CurrentStreak != 0 {
+		t.Errorf("expected current streak reset to 0, got %d", stats.CurrentStreak)
+	}
+	if stats.BestStreak != 1 {
+		t.Errorf("expected best streak 1, got %d", stats.BestStreak)
+	}
+	if stats.TotalPnL != 2000000 {
+		t.Errorf("expected total P&L 2000000, got %d", stats.TotalPnL)
+	}
+	if stats.BestPnL != 5000000 {
+		t.Errorf("expected best P&L 5000000, got %d", stats.BestPnL)
+	}
+	if stats.WorstPnL != -3000000 {
+		t.Errorf("expected worst P&L -3000000, got %d", stats.WorstPnL)
+	}
+}
+
+func TestGetUserMatchHistory(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	user, _ := store.CreateUser("alice", "pass")
+
+	// Create 3 matches
+	for i := 1; i <= 3; i++ {
+		match := MatchRecord{
+			ID:               fmt.Sprintf("match_%d", i),
+			Symbol:           "SPY",
+			DurationMinutes:  10,
+			TargetNAV:        48000,
+			FinalNAV:         48000 + int64(i*100),
+			ParticipantCount: 1,
+			StartedAt:        time.Now().Add(time.Duration(-30+i*10) * time.Minute),
+			EndedAt:          time.Now().Add(time.Duration(-20+i*10) * time.Minute),
+		}
+		results := []MatchResult{{
+			MatchID:       fmt.Sprintf("match_%d", i),
+			UserID:        user.ID,
+			StartingValue: 100000000,
+			FinalValue:    100000000 + int64(i*1000000),
+			PnL:           int64(i * 1000000),
+			Rank:          1,
+		}}
+		store.SaveMatch(match, results)
+	}
+
+	history, err := store.GetUserMatchHistory(user.ID, 10)
+	if err != nil {
+		t.Fatalf("GetUserMatchHistory failed: %v", err)
+	}
+	if len(history) != 3 {
+		t.Errorf("expected 3 history entries, got %d", len(history))
+	}
+
+	// Should be in reverse chronological order (most recent first)
+	if history[0].MatchID != "match_3" {
+		t.Errorf("expected most recent match first, got %s", history[0].MatchID)
+	}
+}
+
+func TestGetMatchLeaderboard(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Create users with different match performance
+	user1, _ := store.CreateUser("alice", "pass")
+	user2, _ := store.CreateUser("bob", "pass")
+	user3, _ := store.CreateUser("charlie", "pass")
+
+	// Alice: 2 wins, +$30k
+	for i := 1; i <= 2; i++ {
+		match := MatchRecord{
+			ID:               fmt.Sprintf("alice_match_%d", i),
+			Symbol:           "SPY",
+			DurationMinutes:  10,
+			TargetNAV:        48000,
+			FinalNAV:         48500,
+			ParticipantCount: 1,
+			StartedAt:        time.Now().Add(-10 * time.Minute),
+			EndedAt:          time.Now(),
+		}
+		results := []MatchResult{{
+			MatchID:       fmt.Sprintf("alice_match_%d", i),
+			UserID:        user1.ID,
+			StartingValue: 100000000,
+			FinalValue:    115000000,
+			PnL:           15000000,
+			Rank:          1,
+		}}
+		store.SaveMatch(match, results)
+	}
+
+	// Bob: 1 match, -$5k
+	store.SaveMatch(MatchRecord{
+		ID:               "bob_match_1",
+		Symbol:           "SPY",
+		DurationMinutes:  10,
+		TargetNAV:        48000,
+		FinalNAV:         47500,
+		ParticipantCount: 1,
+		StartedAt:        time.Now().Add(-10 * time.Minute),
+		EndedAt:          time.Now(),
+	}, []MatchResult{{
+		MatchID:       "bob_match_1",
+		UserID:        user2.ID,
+		StartingValue: 100000000,
+		FinalValue:    95000000,
+		PnL:           -5000000,
+		Rank:          2,
+	}})
+
+	// Charlie: no matches
+	_ = user3
+
+	leaderboard, err := store.GetMatchLeaderboard(10)
+	if err != nil {
+		t.Fatalf("GetMatchLeaderboard failed: %v", err)
+	}
+
+	// Should only have 2 entries (alice and bob, charlie has no matches)
+	if len(leaderboard) != 2 {
+		t.Errorf("expected 2 leaderboard entries, got %d", len(leaderboard))
+	}
+
+	// Alice should be first (highest total P&L)
+	if leaderboard[0].UserID != user1.ID {
+		t.Errorf("expected alice first on leaderboard")
+	}
+	if leaderboard[0].TotalPnL != 30000000 {
+		t.Errorf("expected alice total P&L 30000000, got %d", leaderboard[0].TotalPnL)
 	}
 }
